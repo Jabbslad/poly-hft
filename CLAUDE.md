@@ -58,3 +58,4 @@ poly-hft config       # Show/edit configuration
 ## Documentation
 
 - `docs/PRD.md` - Product Requirements Document (authoritative)
+- Polymarket Developer Docs: https://docs.polymarket.com/llms.txt - Refer to this when implementing any Polymarket-specific code
