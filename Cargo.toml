@@ -2,9 +2,58 @@
 name = "poly-hft"
 version = "0.1.0"
 edition = "2021"
+description = "High-frequency trading bot for Polymarket BTC up/down markets"
+license = "MIT"
 
 [dependencies]
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+async-trait = "0.1"
+
+# HTTP client
+reqwest = { version = "0.12", features = ["json"] }
+
+# WebSocket
+tokio-tungstenite = { version = "0.24", features = ["native-tls"] }
+futures-util = "0.3"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+
+# Decimal math
+rust_decimal = { version = "1.36", features = ["serde"] }
+rust_decimal_macros = "1.36"
+
+# Time
+chrono = { version = "0.4", features = ["serde"] }
+
+# CLI
+clap = { version = "4", features = ["derive"] }
+
+# Data storage
+parquet = { version = "53", features = ["async"] }
+arrow = "53"
+
+# Observability
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
+
+# Error handling
+thiserror = "2"
+anyhow = "1"
+
+# Utilities
+uuid = { version = "1", features = ["v4", "serde"] }
 
 [dev-dependencies]
 # Pre-commit hooks - auto-installs on cargo build/test
 cargo-husky = { version = "1", default-features = false, features = ["user-hooks"] }
+
+tokio-test = "0.4"
+criterion = { version = "0.5", features = ["async_tokio"] }
+
+[[bench]]
+name = "fair_value"
+harness = false
