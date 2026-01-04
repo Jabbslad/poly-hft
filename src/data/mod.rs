@@ -5,5 +5,8 @@
 mod parquet;
 mod recorder;
 
-pub use parquet::ParquetWriter;
-pub use recorder::DataRecorder;
+pub use parquet::{
+    orderbook_schema, price_tick_schema, signal_schema, OrderBookRecord, ParquetReader,
+    ParquetWriter, PriceTickRecord, SignalRecord,
+};
+pub use recorder::{DataRecorder, RecorderConfig, RecorderStats};
