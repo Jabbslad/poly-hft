@@ -910,8 +910,9 @@ thiserror = "2"
 anyhow = "1"
 
 [dev-dependencies]
-# Pre-commit hooks (fmt, clippy, test) - auto-installs on cargo build
-cargo-husky = { version = "1", features = ["run-cargo-fmt", "run-cargo-clippy", "run-cargo-test"] }
+# Pre-commit hooks - auto-installs on cargo build/test
+# Requires .cargo-husky/hooks/pre-commit script (checked in)
+cargo-husky = { version = "1", default-features = false, features = ["user-hooks"] }
 
 tokio-test = "0.4"
 mockall = "0.13"
