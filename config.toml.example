@@ -1,0 +1,39 @@
+# poly-hft Configuration
+# Copy this file to config.toml and adjust settings as needed
+
+[feed]
+exchange = "binance"
+symbol = "BTCUSDT"
+
+[market]
+asset = "BTC"
+interval = "15m"
+refresh_interval_secs = 30
+
+[model]
+volatility_window_minutes = 30
+min_time_to_expiry_secs = 60  # Don't trade last minute
+
+[signal]
+min_edge_threshold = 0.005    # 0.5%
+max_edge_threshold = 0.10     # 10% (likely stale data)
+
+[risk]
+kelly_fraction = 0.25
+max_position_pct = 0.01       # 1% of bankroll
+max_concurrent_positions = 3
+initial_bankroll = 500.0
+
+[execution]
+mode = "paper"                # paper | live
+slippage_estimate = 0.001     # 0.1%
+
+[data]
+capture_enabled = true
+output_dir = "./data"
+rotation_interval = "1h"
+
+[telemetry]
+metrics_port = 9090
+log_level = "info"
+otlp_endpoint = "http://localhost:4317"
