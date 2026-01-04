@@ -1066,12 +1066,49 @@ poly-hft/
 
 1. **Volatility Model**: Using realized volatility only (rolling std dev of log returns from Binance). Simpler and more predictable than implied vol derivation.
 
-2. **Execution Delay Handling**: Research required before implementation. Need to investigate current Polymarket CLOB delay behavior to determine whether to factor into edge calculation or use maker orders.
+2. **Execution Delay Handling**: Use maker orders where possible to avoid taker delay. For taker orders, add ~500ms buffer to edge calculations. See research findings below.
+
+## Research Findings
+
+### Polymarket Execution Delay Behavior (Researched: 2026-01-04)
+
+**Architecture**: Polymarket uses a hybrid-decentralized CLOB with off-chain matching and on-chain settlement. Limit orders are entirely off-chain until matched.
+
+**Latency Characteristics**:
+| Component | Latency | Notes |
+|-----------|---------|-------|
+| WebSocket updates | < 50ms | Real-time market data |
+| Order signing (Python) | ~1000ms | Unoptimized reference implementation |
+| Order signing (Rust/Go) | < 100ms | Optimized implementations required for HFT |
+| Taker delay | ~500ms | Market makers use 500ms cancel/replace intervals to account for this |
+| Cloudflare overhead | Variable | Adds latency; no "magic 5ms servers" unless special access |
+| Sports markets | 3000ms | Intentional delay to prevent live-score sniping |
+
+**Key Insights**:
+1. **500ms taker delay is real**: Market maker bots configure `CANCEL_REPLACE_INTERVAL_MS=500` to match this delay
+2. **Limit orders are off-chain**: Using a Polygon RPC for limit orders adds unnecessary latency
+3. **No atomic arbitrage**: Execution delays mean cross-venue arbitrage carries unhedged position risk
+4. **Queue position matters**: Earlier orders at a price level get filled first
+
+**Implications for poly-hft**:
+- Prefer maker orders (post-only) to avoid taker delay
+- Add 500ms buffer to edge calculations for taker orders
+- Use Rust SDK (not Python) for order signing
+- Target ~100ms end-to-end latency (achievable with optimized code)
+
+**Rate Limits** (CLOB Trading):
+| Endpoint | Burst (10s) | Sustained (10min) |
+|----------|-------------|-------------------|
+| POST /order | 3,500 (500/s) | 36,000 (60/s) |
+| DELETE /order | 3,000 (300/s) | 30,000 (50/s) |
+| POST /orders (batch) | 1,000 (100/s) | 15,000 (25/s) |
+
+Note: Cloudflare throttles rather than rejects—requests are delayed/queued.
 
 ## Research Items (Pre-Implementation)
 
 - [ ] Verify how Polymarket determines market open price (Chainlink oracle timestamp?)
-- [ ] Current Polymarket execution delay behavior (500ms rumor)
+- [x] Current Polymarket execution delay behavior (500ms rumor) — **Confirmed, see above**
 - [ ] Current fee structure for takers vs makers
 - [ ] Optimal edge threshold accounting for fees + slippage
 
