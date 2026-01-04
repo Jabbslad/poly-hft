@@ -97,6 +97,10 @@ A high-frequency trading bot that exploits pricing lags in Polymarket's 15-minut
 
 **Key Dependencies**: `tokio-tungstenite`, `serde`
 
+**Binance WebSocket**:
+- Endpoint: `wss://stream.binance.com:9443/ws/btcusdt@trade`
+- Authentication: None required (public market data stream)
+
 **Interface**:
 ```rust
 pub trait PriceFeed: Send + Sync {
