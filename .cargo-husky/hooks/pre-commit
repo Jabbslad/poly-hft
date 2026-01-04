@@ -1,0 +1,20 @@
+#!/bin/sh
+#
+# Pre-commit hook for poly-hft
+# Runs: cargo fmt, cargo clippy, cargo test
+#
+
+set -e
+
+echo "Running pre-commit checks..."
+
+echo "+ cargo fmt --all -- --check"
+cargo fmt --all -- --check
+
+echo "+ cargo clippy --all -- -D warnings"
+cargo clippy --all -- -D warnings
+
+echo "+ cargo test --all"
+cargo test --all
+
+echo "Pre-commit checks passed!"
