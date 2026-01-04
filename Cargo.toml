@@ -39,6 +39,8 @@ arrow = "53"
 # Observability
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
+metrics = "0.24"
+metrics-exporter-prometheus = "0.16"
 
 # Error handling
 thiserror = "2"
@@ -53,6 +55,7 @@ cargo-husky = { version = "1", default-features = false, features = ["user-hooks
 
 tokio-test = "0.4"
 criterion = { version = "0.5", features = ["async_tokio"] }
+tempfile = "3"
 
 [[bench]]
 name = "fair_value"
