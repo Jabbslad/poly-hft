@@ -1,5 +1,7 @@
 # poly-hft Architecture
 
+For a detailed walkthrough of the trading loop with examples, see [Trading Flow](./trading-flow.md).
+
 ## System Overview Diagram
 
 ```

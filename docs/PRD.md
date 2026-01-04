@@ -84,7 +84,7 @@ A high-frequency trading bot that exploits pricing lags in Polymarket's 15-minut
 +------------------+
 ```
 
-For detailed data flow diagrams, component interactions, and module dependencies, see [Architecture Documentation](./architecture.md).
+For detailed data flow diagrams, component interactions, and module dependencies, see [Architecture Documentation](./architecture.md). For a step-by-step walkthrough of the trading loop with examples, see [Trading Flow](./trading-flow.md).
 
 ---
 
