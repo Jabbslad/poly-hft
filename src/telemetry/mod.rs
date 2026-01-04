@@ -7,7 +7,11 @@ mod metrics;
 mod tracing_setup;
 
 pub use logging::{init_logging, LogFormat};
-pub use metrics::{record_latency, set_gauge, GaugeMetric, LatencyMetric};
+pub use metrics::{
+    increment_counter, increment_counter_simple, init_metrics_server, record_error, record_fill,
+    record_latency, record_order, record_orderbook_update, record_price_tick, record_signal,
+    record_ws_reconnect, set_gauge, CounterMetric, GaugeMetric, LatencyMetric,
+};
 pub use tracing_setup::init_tracing;
 
 use crate::config::TelemetryConfig;
@@ -25,7 +29,8 @@ pub fn init_telemetry(config: &TelemetryConfig) -> anyhow::Result<TelemetryGuard
         init_tracing(endpoint)?;
     }
 
-    // TODO: Start metrics server on config.metrics_port
+    // Start metrics server
+    init_metrics_server(config.metrics_port)?;
 
     Ok(TelemetryGuard { _priv: () })
 }

@@ -55,7 +55,23 @@ poly-hft config       # Show/edit configuration
 - Clippy clean, rustfmt formatted
 - Price feed latency < 50ms, signal generation < 10ms
 
+## Issue Tracking
+
+This project uses **bd (beads)** for issue tracking. See `AGENTS.md` for workflow details.
+
+**Quick reference:**
+```bash
+bd ready              # Find unblocked work
+bd create "Title"     # Create issue
+bd show <id>          # View issue details
+bd close <id>         # Complete work
+bd sync               # Sync with git
+```
+
+Run `bd prime` for full workflow context.
+
 ## Documentation
 
 - `docs/PRD.md` - Product Requirements Document (authoritative)
+- `AGENTS.md` - Agent workflow and session completion rules
 - Polymarket Developer Docs: https://docs.polymarket.com/llms.txt - Refer to this when implementing any Polymarket-specific code

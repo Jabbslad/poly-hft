@@ -126,4 +126,112 @@ mod tests {
         // Price 1% above open with 1 min left should favor Yes
         assert!(fair_value.yes_prob > dec!(0.6));
     }
+
+    #[test]
+    fn test_gbm_out_of_the_money() {
+        let model = GbmModel::new();
+        let params = FairValueParams {
+            current_price: dec!(99000),
+            open_price: dec!(100000),
+            time_to_expiry: Duration::minutes(1),
+            volatility: dec!(0.50),
+        };
+
+        let fair_value = model.calculate(params);
+        // Price 1% below open with 1 min left should favor No
+        assert!(fair_value.yes_prob < dec!(0.4));
+        assert!(fair_value.no_prob > dec!(0.6));
+    }
+
+    #[test]
+    fn test_gbm_at_expiry() {
+        let model = GbmModel::new();
+        let params = FairValueParams {
+            current_price: dec!(101000),
+            open_price: dec!(100000),
+            time_to_expiry: Duration::zero(),
+            volatility: dec!(0.50),
+        };
+
+        let fair_value = model.calculate(params);
+        // At expiry with price above open: certain Yes
+        assert_eq!(fair_value.yes_prob, dec!(1));
+        assert_eq!(fair_value.no_prob, dec!(0));
+        assert_eq!(fair_value.confidence, dec!(1));
+    }
+
+    #[test]
+    fn test_gbm_at_expiry_below_open() {
+        let model = GbmModel::new();
+        let params = FairValueParams {
+            current_price: dec!(99000),
+            open_price: dec!(100000),
+            time_to_expiry: Duration::zero(),
+            volatility: dec!(0.50),
+        };
+
+        let fair_value = model.calculate(params);
+        // At expiry with price below open: certain No
+        assert_eq!(fair_value.yes_prob, dec!(0));
+        assert_eq!(fair_value.no_prob, dec!(1));
+    }
+
+    #[test]
+    fn test_gbm_zero_volatility() {
+        let model = GbmModel::new();
+        let params = FairValueParams {
+            current_price: dec!(101000),
+            open_price: dec!(100000),
+            time_to_expiry: Duration::minutes(5),
+            volatility: dec!(0),
+        };
+
+        let fair_value = model.calculate(params);
+        // Zero vol: deterministic based on current price
+        assert_eq!(fair_value.yes_prob, dec!(1));
+    }
+
+    #[test]
+    fn test_gbm_default() {
+        let model = GbmModel::default();
+        let params = FairValueParams {
+            current_price: dec!(100000),
+            open_price: dec!(100000),
+            time_to_expiry: Duration::minutes(7),
+            volatility: dec!(0.50),
+        };
+
+        let fair_value = model.calculate(params);
+        assert!(fair_value.yes_prob > dec!(0) && fair_value.yes_prob < dec!(1));
+    }
+
+    #[test]
+    fn test_gbm_probs_sum_to_one() {
+        let model = GbmModel::new();
+        let params = FairValueParams {
+            current_price: dec!(102000),
+            open_price: dec!(100000),
+            time_to_expiry: Duration::minutes(3),
+            volatility: dec!(0.40),
+        };
+
+        let fair_value = model.calculate(params);
+        assert_eq!(fair_value.yes_prob + fair_value.no_prob, dec!(1));
+    }
+
+    #[test]
+    fn test_normal_cdf_bounds() {
+        // Test edge cases for normal CDF
+        assert!(normal_cdf(0.0) > 0.49 && normal_cdf(0.0) < 0.51); // Should be ~0.5
+        assert!(normal_cdf(3.0) > 0.99); // 3 sigma should be > 99%
+        assert!(normal_cdf(-3.0) < 0.01); // -3 sigma should be < 1%
+    }
+
+    #[test]
+    fn test_normal_cdf_symmetry() {
+        let pos = normal_cdf(1.5);
+        let neg = normal_cdf(-1.5);
+        // CDF(-x) = 1 - CDF(x)
+        assert!((pos + neg - 1.0).abs() < 0.001);
+    }
 }

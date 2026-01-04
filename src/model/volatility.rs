@@ -114,4 +114,125 @@ mod tests {
         assert!(vol.is_some());
         assert!(vol.unwrap() > dec!(0));
     }
+
+    #[test]
+    fn test_volatility_estimator_new() {
+        let estimator = VolatilityEstimator::new(Duration::minutes(5));
+        assert!(estimator.estimate().is_none()); // Empty estimator
+    }
+
+    #[test]
+    fn test_volatility_single_price() {
+        let mut estimator = VolatilityEstimator::new(Duration::minutes(5));
+        estimator.update(Utc::now(), dec!(100000));
+        // Single price cannot calculate volatility
+        assert!(estimator.estimate().is_none());
+    }
+
+    #[test]
+    fn test_volatility_two_prices() {
+        let mut estimator = VolatilityEstimator::new(Duration::minutes(5));
+        let base_time = Utc::now();
+        estimator.update(base_time, dec!(100000));
+        estimator.update(base_time + Duration::seconds(1), dec!(100100));
+        // Two prices can calculate volatility
+        assert!(estimator.estimate().is_some());
+    }
+
+    #[test]
+    fn test_volatility_window_expiry() {
+        let mut estimator = VolatilityEstimator::new(Duration::seconds(5));
+        let base_time = Utc::now();
+
+        // Add prices within window
+        estimator.update(base_time, dec!(100000));
+        estimator.update(base_time + Duration::seconds(1), dec!(100100));
+        estimator.update(base_time + Duration::seconds(2), dec!(100200));
+
+        // Add prices that will expire old ones but keep at least 2
+        estimator.update(base_time + Duration::seconds(6), dec!(100300));
+        estimator.update(base_time + Duration::seconds(7), dec!(100400));
+
+        // Should still have enough data points for volatility calculation
+        let vol = estimator.estimate();
+        assert!(vol.is_some());
+    }
+
+    #[test]
+    fn test_volatility_constant_price() {
+        let mut estimator = VolatilityEstimator::new(Duration::minutes(5));
+        let base_time = Utc::now();
+
+        // Add same price multiple times
+        for i in 0..5 {
+            estimator.update(base_time + Duration::seconds(i), dec!(100000));
+        }
+
+        let vol = estimator.estimate();
+        // Constant price should have zero or near-zero volatility
+        assert!(vol.is_some());
+        assert!(vol.unwrap() < dec!(0.001)); // Very low volatility
+    }
+
+    #[test]
+    fn test_standard_error() {
+        let mut estimator = VolatilityEstimator::new(Duration::minutes(30));
+        let base_time = Utc::now();
+
+        for i in 0..10 {
+            let price = dec!(100000) + Decimal::from(i * 10);
+            estimator.update(base_time + Duration::seconds(i), price);
+        }
+
+        let se = estimator.standard_error();
+        assert!(se.is_some());
+        assert!(se.unwrap() > dec!(0));
+    }
+
+    #[test]
+    fn test_standard_error_insufficient_data() {
+        let estimator = VolatilityEstimator::new(Duration::minutes(5));
+        // No data
+        assert!(estimator.standard_error().is_none());
+    }
+
+    #[test]
+    fn test_standard_error_single_price() {
+        let mut estimator = VolatilityEstimator::new(Duration::minutes(5));
+        estimator.update(Utc::now(), dec!(100000));
+        // Single price cannot calculate standard error
+        assert!(estimator.standard_error().is_none());
+    }
+
+    #[test]
+    fn test_volatility_increasing_prices() {
+        let mut estimator = VolatilityEstimator::new(Duration::minutes(30));
+        let base_time = Utc::now();
+
+        // Steadily increasing prices
+        for i in 0..20 {
+            let price = dec!(100000) + Decimal::from(i * 100);
+            estimator.update(base_time + Duration::seconds(i), price);
+        }
+
+        let vol = estimator.estimate();
+        assert!(vol.is_some());
+        assert!(vol.unwrap() > dec!(0));
+    }
+
+    #[test]
+    fn test_volatility_decreasing_prices() {
+        let mut estimator = VolatilityEstimator::new(Duration::minutes(30));
+        let base_time = Utc::now();
+
+        // Steadily decreasing prices
+        for i in 0..20 {
+            let price = dec!(100000) - Decimal::from(i * 100);
+            estimator.update(base_time + Duration::seconds(i), price);
+        }
+
+        let vol = estimator.estimate();
+        assert!(vol.is_some());
+        assert!(vol.unwrap() > dec!(0));
+    }
 }
