@@ -5,8 +5,9 @@ use crate::feed::PriceTick;
 use crate::orderbook::OrderBook;
 use chrono::{Duration, Utc};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::mpsc;
 
 /// Configuration for data recording
 #[derive(Debug, Clone)]
@@ -32,15 +33,32 @@ impl Default for RecorderConfig {
     }
 }
 
-/// Records market data to Parquet files
-pub struct DataRecorder {
-    config: RecorderConfig,
-    price_tx: mpsc::Sender<PriceTick>,
-    orderbook_tx: mpsc::Sender<OrderBook>,
-    stats: Arc<RwLock<RecorderStats>>,
+/// Atomic recording statistics - lock-free for high performance
+#[derive(Debug, Default)]
+pub struct AtomicRecorderStats {
+    pub price_ticks_received: AtomicU64,
+    pub price_ticks_written: AtomicU64,
+    pub orderbook_updates_received: AtomicU64,
+    pub orderbook_updates_written: AtomicU64,
+    pub files_written: AtomicU64,
+    pub channel_drops: AtomicU64,
 }
 
-/// Recording statistics
+impl AtomicRecorderStats {
+    /// Get a snapshot of current stats
+    pub fn snapshot(&self) -> RecorderStats {
+        RecorderStats {
+            price_ticks_received: self.price_ticks_received.load(Ordering::Relaxed),
+            price_ticks_written: self.price_ticks_written.load(Ordering::Relaxed),
+            orderbook_updates_received: self.orderbook_updates_received.load(Ordering::Relaxed),
+            orderbook_updates_written: self.orderbook_updates_written.load(Ordering::Relaxed),
+            files_written: self.files_written.load(Ordering::Relaxed),
+            channel_drops: self.channel_drops.load(Ordering::Relaxed),
+        }
+    }
+}
+
+/// Recording statistics snapshot
 #[derive(Debug, Default, Clone)]
 pub struct RecorderStats {
     pub price_ticks_received: u64,
@@ -48,7 +66,15 @@ pub struct RecorderStats {
     pub orderbook_updates_received: u64,
     pub orderbook_updates_written: u64,
     pub files_written: u64,
-    pub last_flush: Option<chrono::DateTime<Utc>>,
+    pub channel_drops: u64,
+}
+
+/// Records market data to Parquet files
+pub struct DataRecorder {
+    config: RecorderConfig,
+    price_tx: mpsc::Sender<PriceTickRecord>,
+    orderbook_tx: mpsc::Sender<OrderBookRecord>,
+    stats: Arc<AtomicRecorderStats>,
 }
 
 impl DataRecorder {
@@ -56,7 +82,7 @@ impl DataRecorder {
     pub fn new(config: RecorderConfig) -> Self {
         let (price_tx, price_rx) = mpsc::channel(10_000);
         let (orderbook_tx, orderbook_rx) = mpsc::channel(10_000);
-        let stats = Arc::new(RwLock::new(RecorderStats::default()));
+        let stats = Arc::new(AtomicRecorderStats::default());
 
         // Spawn price tick writer
         let price_writer =
@@ -101,10 +127,10 @@ impl DataRecorder {
 
     /// Run the price tick writer task
     async fn run_price_writer(
-        mut rx: mpsc::Receiver<PriceTick>,
+        mut rx: mpsc::Receiver<PriceTickRecord>,
         mut writer: ParquetWriter,
         config: RecorderConfig,
-        stats: Arc<RwLock<RecorderStats>>,
+        stats: Arc<AtomicRecorderStats>,
     ) {
         let mut buffer: Vec<PriceTickRecord> = Vec::with_capacity(config.buffer_size);
         let mut last_flush = Utc::now();
@@ -118,17 +144,10 @@ impl DataRecorder {
                 result = rx.recv() => {
                     match result {
                         Some(tick) => {
-                            {
-                                let mut s = stats.write().await;
-                                s.price_ticks_received += 1;
-                            }
+                            // Atomic increment - no lock needed
+                            stats.price_ticks_received.fetch_add(1, Ordering::Relaxed);
 
-                            buffer.push(PriceTickRecord {
-                                timestamp: tick.timestamp,
-                                symbol: tick.symbol,
-                                price: tick.price,
-                                exchange_ts: tick.exchange_ts,
-                            });
+                            buffer.push(tick);
 
                             // Flush if buffer is full
                             if buffer.len() >= config.buffer_size {
@@ -159,11 +178,11 @@ impl DataRecorder {
         }
     }
 
-    /// Flush price tick buffer to disk
+    /// Flush price tick buffer to disk using async spawn_blocking
     async fn flush_price_buffer(
         buffer: &mut Vec<PriceTickRecord>,
         writer: &mut ParquetWriter,
-        stats: &Arc<RwLock<RecorderStats>>,
+        stats: &Arc<AtomicRecorderStats>,
     ) {
         if buffer.is_empty() {
             return;
@@ -179,28 +198,30 @@ impl DataRecorder {
         let path = writer.file_path("price_ticks", now);
         let count = buffer.len();
 
-        match writer.write_price_ticks(&path, buffer) {
+        // Take ownership of buffer data for async write
+        let ticks = std::mem::take(buffer);
+
+        // Use async write with spawn_blocking
+        match writer.write_price_ticks_async(path.clone(), ticks).await {
             Ok(()) => {
-                let mut s = stats.write().await;
-                s.price_ticks_written += count as u64;
-                s.files_written += 1;
-                s.last_flush = Some(now);
+                stats
+                    .price_ticks_written
+                    .fetch_add(count as u64, Ordering::Relaxed);
+                stats.files_written.fetch_add(1, Ordering::Relaxed);
                 tracing::debug!(count, path = ?path, "Flushed price ticks");
             }
             Err(e) => {
                 tracing::error!(error = %e, "Failed to write price ticks");
             }
         }
-
-        buffer.clear();
     }
 
     /// Run the orderbook writer task
     async fn run_orderbook_writer(
-        mut rx: mpsc::Receiver<OrderBook>,
+        mut rx: mpsc::Receiver<OrderBookRecord>,
         mut writer: ParquetWriter,
         config: RecorderConfig,
-        stats: Arc<RwLock<RecorderStats>>,
+        stats: Arc<AtomicRecorderStats>,
     ) {
         let mut buffer: Vec<OrderBookRecord> = Vec::with_capacity(config.buffer_size);
         let mut last_flush = Utc::now();
@@ -213,17 +234,8 @@ impl DataRecorder {
                 result = rx.recv() => {
                     match result {
                         Some(book) => {
-                            {
-                                let mut s = stats.write().await;
-                                s.orderbook_updates_received += 1;
-                            }
-
-                            buffer.push(OrderBookRecord {
-                                timestamp: book.updated_at,
-                                token_id: book.token_id.clone(),
-                                bids: book.bids.iter().map(|l| (l.price, l.size)).collect(),
-                                asks: book.asks.iter().map(|l| (l.price, l.size)).collect(),
-                            });
+                            stats.orderbook_updates_received.fetch_add(1, Ordering::Relaxed);
+                            buffer.push(book);
 
                             if buffer.len() >= config.buffer_size {
                                 Self::flush_orderbook_buffer(&mut buffer, &mut writer, &stats).await;
@@ -251,11 +263,11 @@ impl DataRecorder {
         }
     }
 
-    /// Flush orderbook buffer to disk
+    /// Flush orderbook buffer to disk using async spawn_blocking
     async fn flush_orderbook_buffer(
         buffer: &mut Vec<OrderBookRecord>,
         writer: &mut ParquetWriter,
-        stats: &Arc<RwLock<RecorderStats>>,
+        stats: &Arc<AtomicRecorderStats>,
     ) {
         if buffer.is_empty() {
             return;
@@ -270,38 +282,92 @@ impl DataRecorder {
         let path = writer.file_path("orderbook", now);
         let count = buffer.len();
 
-        match writer.write_orderbook_snapshots(&path, buffer) {
+        // Take ownership for async write
+        let snapshots = std::mem::take(buffer);
+
+        match writer
+            .write_orderbook_snapshots_async(path.clone(), snapshots)
+            .await
+        {
             Ok(()) => {
-                let mut s = stats.write().await;
-                s.orderbook_updates_written += count as u64;
-                s.files_written += 1;
-                s.last_flush = Some(now);
+                stats
+                    .orderbook_updates_written
+                    .fetch_add(count as u64, Ordering::Relaxed);
+                stats.files_written.fetch_add(1, Ordering::Relaxed);
                 tracing::debug!(count, path = ?path, "Flushed orderbook snapshots");
             }
             Err(e) => {
                 tracing::error!(error = %e, "Failed to write orderbook snapshots");
             }
         }
-
-        buffer.clear();
     }
 
-    /// Record a price tick
-    pub async fn record_price(&self, tick: PriceTick) -> anyhow::Result<()> {
+    /// Record a price tick - non-blocking using try_send
+    pub fn record_price(&self, tick: PriceTick) -> Result<(), RecordError> {
+        let record = PriceTickRecord {
+            timestamp: tick.timestamp,
+            symbol: Arc::from(tick.symbol.as_str()),
+            price: tick.price,
+            exchange_ts: tick.exchange_ts,
+        };
+
+        match self.price_tx.try_send(record) {
+            Ok(()) => Ok(()),
+            Err(mpsc::error::TrySendError::Full(_)) => {
+                self.stats.channel_drops.fetch_add(1, Ordering::Relaxed);
+                Err(RecordError::ChannelFull)
+            }
+            Err(mpsc::error::TrySendError::Closed(_)) => Err(RecordError::ChannelClosed),
+        }
+    }
+
+    /// Record a price tick - async version that waits if channel is full
+    pub async fn record_price_async(&self, tick: PriceTick) -> anyhow::Result<()> {
+        let record = PriceTickRecord {
+            timestamp: tick.timestamp,
+            symbol: Arc::from(tick.symbol.as_str()),
+            price: tick.price,
+            exchange_ts: tick.exchange_ts,
+        };
+
         self.price_tx
-            .send(tick)
+            .send(record)
             .await
-            .map_err(|e| anyhow::anyhow!("Failed to send price tick: {}", e))?;
-        Ok(())
+            .map_err(|e| anyhow::anyhow!("Failed to send price tick: {}", e))
     }
 
-    /// Record an order book snapshot
-    pub async fn record_orderbook(&self, book: OrderBook) -> anyhow::Result<()> {
+    /// Record an order book snapshot - non-blocking using try_send
+    pub fn record_orderbook(&self, book: OrderBook) -> Result<(), RecordError> {
+        let record = OrderBookRecord {
+            timestamp: book.updated_at,
+            token_id: Arc::from(book.token_id.as_str()),
+            bids: book.bids.iter().map(|l| (l.price, l.size)).collect(),
+            asks: book.asks.iter().map(|l| (l.price, l.size)).collect(),
+        };
+
+        match self.orderbook_tx.try_send(record) {
+            Ok(()) => Ok(()),
+            Err(mpsc::error::TrySendError::Full(_)) => {
+                self.stats.channel_drops.fetch_add(1, Ordering::Relaxed);
+                Err(RecordError::ChannelFull)
+            }
+            Err(mpsc::error::TrySendError::Closed(_)) => Err(RecordError::ChannelClosed),
+        }
+    }
+
+    /// Record an order book snapshot - async version
+    pub async fn record_orderbook_async(&self, book: OrderBook) -> anyhow::Result<()> {
+        let record = OrderBookRecord {
+            timestamp: book.updated_at,
+            token_id: Arc::from(book.token_id.as_str()),
+            bids: book.bids.iter().map(|l| (l.price, l.size)).collect(),
+            asks: book.asks.iter().map(|l| (l.price, l.size)).collect(),
+        };
+
         self.orderbook_tx
-            .send(book)
+            .send(record)
             .await
-            .map_err(|e| anyhow::anyhow!("Failed to send orderbook: {}", e))?;
-        Ok(())
+            .map_err(|e| anyhow::anyhow!("Failed to send orderbook: {}", e))
     }
 
     /// Get output directory
@@ -309,11 +375,31 @@ impl DataRecorder {
         &self.config.output_dir
     }
 
-    /// Get current statistics
-    pub async fn stats(&self) -> RecorderStats {
-        self.stats.read().await.clone()
+    /// Get current statistics (lock-free snapshot)
+    pub fn stats(&self) -> RecorderStats {
+        self.stats.snapshot()
     }
 }
+
+/// Error type for recording operations
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RecordError {
+    /// Channel is full - data was dropped
+    ChannelFull,
+    /// Channel is closed - recorder is shutting down
+    ChannelClosed,
+}
+
+impl std::fmt::Display for RecordError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RecordError::ChannelFull => write!(f, "Channel full, data dropped"),
+            RecordError::ChannelClosed => write!(f, "Channel closed"),
+        }
+    }
+}
+
+impl std::error::Error for RecordError {}
 
 #[cfg(test)]
 mod tests {
@@ -355,12 +441,13 @@ mod tests {
             exchange_ts: Utc::now(),
         };
 
-        recorder.record_price(tick).await.unwrap();
+        // Use non-blocking record
+        recorder.record_price(tick).unwrap();
 
         // Give time for async flush
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
-        let stats = recorder.stats().await;
+        let stats = recorder.stats();
         assert_eq!(stats.price_ticks_received, 1);
     }
 
@@ -389,11 +476,11 @@ mod tests {
             updated_at: Utc::now(),
         };
 
-        recorder.record_orderbook(book).await.unwrap();
+        recorder.record_orderbook(book).unwrap();
 
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
-        let stats = recorder.stats().await;
+        let stats = recorder.stats();
         assert_eq!(stats.orderbook_updates_received, 1);
     }
 
@@ -403,5 +490,29 @@ mod tests {
         assert_eq!(config.rotation_interval_secs, 3600);
         assert_eq!(config.buffer_size, 1000);
         assert_eq!(config.flush_interval_secs, 60);
+    }
+
+    #[tokio::test]
+    async fn test_atomic_stats() {
+        let stats = Arc::new(AtomicRecorderStats::default());
+
+        // Simulate concurrent updates
+        let stats_clone = stats.clone();
+        let handle = tokio::spawn(async move {
+            for _ in 0..1000 {
+                stats_clone
+                    .price_ticks_received
+                    .fetch_add(1, Ordering::Relaxed);
+            }
+        });
+
+        for _ in 0..1000 {
+            stats.price_ticks_received.fetch_add(1, Ordering::Relaxed);
+        }
+
+        handle.await.unwrap();
+
+        let snapshot = stats.snapshot();
+        assert_eq!(snapshot.price_ticks_received, 2000);
     }
 }

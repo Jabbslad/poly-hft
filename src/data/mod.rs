@@ -9,4 +9,4 @@ pub use parquet::{
     orderbook_schema, price_tick_schema, signal_schema, OrderBookRecord, ParquetReader,
     ParquetWriter, PriceTickRecord, SignalRecord,
 };
-pub use recorder::{DataRecorder, RecorderConfig, RecorderStats};
+pub use recorder::{AtomicRecorderStats, DataRecorder, RecordError, RecorderConfig, RecorderStats};
