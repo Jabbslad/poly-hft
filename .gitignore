@@ -1,2 +1,6 @@
 /target
 /data
+/perf_test
+/perf_test2
+/test_data
+*.parquet
