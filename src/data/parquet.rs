@@ -603,4 +603,261 @@ mod tests {
         // Verify file was created
         assert!(path.exists());
     }
+
+    #[tokio::test]
+    async fn test_write_empty_ticks_async() {
+        let temp_dir = TempDir::new().unwrap();
+        let writer = ParquetWriter::new(temp_dir.path().to_path_buf(), 3600);
+
+        let path = writer.file_path("price_ticks", Utc::now());
+        // Should succeed without creating file
+        writer
+            .write_price_ticks_async(path.clone(), vec![])
+            .await
+            .unwrap();
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn test_write_and_read_orderbook_snapshots() {
+        let temp_dir = TempDir::new().unwrap();
+        let writer = ParquetWriter::new(temp_dir.path().to_path_buf(), 3600);
+
+        let now = Utc::now();
+        let snapshots = vec![
+            OrderBookRecord {
+                timestamp: now,
+                token_id: Arc::from("yes-token"),
+                bids: vec![(dec!(0.55), dec!(100)), (dec!(0.54), dec!(200))],
+                asks: vec![(dec!(0.56), dec!(150)), (dec!(0.57), dec!(250))],
+            },
+            OrderBookRecord {
+                timestamp: now,
+                token_id: Arc::from("no-token"),
+                bids: vec![(dec!(0.45), dec!(50))],
+                asks: vec![(dec!(0.46), dec!(75))],
+            },
+        ];
+
+        let path = writer.file_path("orderbook", now);
+        writer.write_orderbook_snapshots(&path, &snapshots).unwrap();
+
+        // Verify file was created
+        assert!(path.exists());
+    }
+
+    #[test]
+    fn test_write_empty_orderbook_snapshots() {
+        let temp_dir = TempDir::new().unwrap();
+        let writer = ParquetWriter::new(temp_dir.path().to_path_buf(), 3600);
+
+        let path = writer.file_path("orderbook", Utc::now());
+        writer.write_orderbook_snapshots(&path, &[]).unwrap();
+        assert!(!path.exists());
+    }
+
+    #[tokio::test]
+    async fn test_write_orderbook_snapshots_async() {
+        let temp_dir = TempDir::new().unwrap();
+        let writer = ParquetWriter::new(temp_dir.path().to_path_buf(), 3600);
+
+        let now = Utc::now();
+        let snapshots = vec![OrderBookRecord {
+            timestamp: now,
+            token_id: Arc::from("test-token"),
+            bids: vec![(dec!(0.50), dec!(100))],
+            asks: vec![(dec!(0.52), dec!(100))],
+        }];
+
+        let path = writer.file_path("orderbook", now);
+        writer
+            .write_orderbook_snapshots_async(path.clone(), snapshots)
+            .await
+            .unwrap();
+
+        assert!(path.exists());
+    }
+
+    #[tokio::test]
+    async fn test_write_empty_orderbook_snapshots_async() {
+        let temp_dir = TempDir::new().unwrap();
+        let writer = ParquetWriter::new(temp_dir.path().to_path_buf(), 3600);
+
+        let path = writer.file_path("orderbook", Utc::now());
+        writer
+            .write_orderbook_snapshots_async(path.clone(), vec![])
+            .await
+            .unwrap();
+        assert!(!path.exists());
+    }
+
+    #[tokio::test]
+    async fn test_read_price_ticks_async() {
+        let temp_dir = TempDir::new().unwrap();
+        let writer = ParquetWriter::new(temp_dir.path().to_path_buf(), 3600);
+
+        let now = Utc::now();
+        let ticks = vec![PriceTickRecord {
+            timestamp: now,
+            symbol: Arc::from("BTCUSDT"),
+            price: dec!(42500.50),
+            exchange_ts: now,
+        }];
+
+        let path = writer.file_path("price_ticks", now);
+        writer.write_price_ticks(&path, &ticks).unwrap();
+
+        // Read back asynchronously
+        let reader = ParquetReader::new(path);
+        let read_ticks = reader.read_price_ticks_async().await.unwrap();
+
+        assert_eq!(read_ticks.len(), 1);
+        assert_eq!(read_ticks[0].symbol.as_ref(), "BTCUSDT");
+    }
+
+    #[test]
+    fn test_parquet_reader_path() {
+        let path = PathBuf::from("/data/test.parquet");
+        let reader = ParquetReader::new(path.clone());
+        assert_eq!(reader.path(), &path);
+    }
+
+    #[test]
+    fn test_signal_schema() {
+        let schema = signal_schema();
+        assert_eq!(schema.fields().len(), 7);
+        assert_eq!(schema.field(0).name(), "timestamp");
+        assert_eq!(schema.field(1).name(), "market_id");
+        assert_eq!(schema.field(2).name(), "side");
+        assert_eq!(schema.field(3).name(), "fair_value");
+        assert_eq!(schema.field(4).name(), "market_price");
+        assert_eq!(schema.field(5).name(), "edge");
+        assert_eq!(schema.field(6).name(), "action");
+    }
+
+    #[test]
+    fn test_write_signals() {
+        let temp_dir = TempDir::new().unwrap();
+        let writer = ParquetWriter::new(temp_dir.path().to_path_buf(), 3600);
+
+        let now = Utc::now();
+        let signals = vec![
+            SignalRecord {
+                timestamp: now,
+                market_id: Arc::from("market-123"),
+                side: Arc::from("YES"),
+                fair_value: dec!(0.55),
+                market_price: dec!(0.50),
+                edge: dec!(0.05),
+                action: Arc::from("BUY"),
+            },
+            SignalRecord {
+                timestamp: now,
+                market_id: Arc::from("market-456"),
+                side: Arc::from("NO"),
+                fair_value: dec!(0.45),
+                market_price: dec!(0.50),
+                edge: dec!(-0.05),
+                action: Arc::from("HOLD"),
+            },
+        ];
+
+        let path = writer.file_path("signals", now);
+        writer.write_signals(&path, &signals).unwrap();
+
+        assert!(path.exists());
+    }
+
+    #[test]
+    fn test_write_empty_signals() {
+        let temp_dir = TempDir::new().unwrap();
+        let writer = ParquetWriter::new(temp_dir.path().to_path_buf(), 3600);
+
+        let path = writer.file_path("signals", Utc::now());
+        writer.write_signals(&path, &[]).unwrap();
+        assert!(!path.exists());
+    }
+
+    #[tokio::test]
+    async fn test_write_signals_async() {
+        let temp_dir = TempDir::new().unwrap();
+        let writer = ParquetWriter::new(temp_dir.path().to_path_buf(), 3600);
+
+        let now = Utc::now();
+        let signals = vec![SignalRecord {
+            timestamp: now,
+            market_id: Arc::from("market-123"),
+            side: Arc::from("YES"),
+            fair_value: dec!(0.55),
+            market_price: dec!(0.50),
+            edge: dec!(0.05),
+            action: Arc::from("BUY"),
+        }];
+
+        let path = writer.file_path("signals", now);
+        writer
+            .write_signals_async(path.clone(), signals)
+            .await
+            .unwrap();
+
+        assert!(path.exists());
+    }
+
+    #[tokio::test]
+    async fn test_write_empty_signals_async() {
+        let temp_dir = TempDir::new().unwrap();
+        let writer = ParquetWriter::new(temp_dir.path().to_path_buf(), 3600);
+
+        let path = writer.file_path("signals", Utc::now());
+        writer
+            .write_signals_async(path.clone(), vec![])
+            .await
+            .unwrap();
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn test_price_tick_record_new() {
+        let now = Utc::now();
+        let record = PriceTickRecord::new(now, Arc::from("BTCUSDT"), dec!(42500.50), now);
+        assert_eq!(record.symbol.as_ref(), "BTCUSDT");
+        assert_eq!(record.price, dec!(42500.50));
+    }
+
+    #[test]
+    fn test_current_path() {
+        let writer = ParquetWriter::new(PathBuf::from("/data"), 3600);
+        let path = writer.current_path("test");
+        assert!(path.to_str().unwrap().starts_with("/data/test_"));
+        assert!(path.to_str().unwrap().ends_with(".parquet"));
+    }
+
+    #[test]
+    fn test_orderbook_record_clone() {
+        let record = OrderBookRecord {
+            timestamp: Utc::now(),
+            token_id: Arc::from("test"),
+            bids: vec![(dec!(0.50), dec!(100))],
+            asks: vec![(dec!(0.52), dec!(100))],
+        };
+        let cloned = record.clone();
+        assert_eq!(record.token_id, cloned.token_id);
+        assert_eq!(record.bids.len(), cloned.bids.len());
+    }
+
+    #[test]
+    fn test_signal_record_clone() {
+        let record = SignalRecord {
+            timestamp: Utc::now(),
+            market_id: Arc::from("market-123"),
+            side: Arc::from("YES"),
+            fair_value: dec!(0.55),
+            market_price: dec!(0.50),
+            edge: dec!(0.05),
+            action: Arc::from("BUY"),
+        };
+        let cloned = record.clone();
+        assert_eq!(record.market_id, cloned.market_id);
+        assert_eq!(record.fair_value, cloned.fair_value);
+    }
 }

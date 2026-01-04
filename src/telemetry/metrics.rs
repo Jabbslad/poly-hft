@@ -270,6 +270,10 @@ mod tests {
             LatencyMetric::SignalGeneration.metric_name(),
             "polyhft_signal_generation_latency_ms"
         );
+        assert_eq!(
+            LatencyMetric::OrderSubmission.metric_name(),
+            "polyhft_order_submission_latency_ms"
+        );
     }
 
     #[test]
@@ -282,6 +286,27 @@ mod tests {
         assert_eq!(
             GaugeMetric::DrawdownPct.metric_name(),
             "polyhft_drawdown_pct"
+        );
+        assert_eq!(
+            GaugeMetric::UnrealizedPnl.metric_name(),
+            "polyhft_unrealized_pnl_usd"
+        );
+        assert_eq!(
+            GaugeMetric::RealizedPnl.metric_name(),
+            "polyhft_realized_pnl_usd"
+        );
+        assert_eq!(
+            GaugeMetric::TotalExposure.metric_name(),
+            "polyhft_total_exposure_usd"
+        );
+        assert_eq!(GaugeMetric::DailyPnl.metric_name(), "polyhft_daily_pnl_usd");
+        assert_eq!(
+            GaugeMetric::CurrentVolatility.metric_name(),
+            "polyhft_current_volatility"
+        );
+        assert_eq!(
+            GaugeMetric::ActiveMarkets.metric_name(),
+            "polyhft_active_markets"
         );
     }
 
@@ -296,5 +321,117 @@ mod tests {
             "polyhft_signals_total"
         );
         assert_eq!(CounterMetric::Errors.metric_name(), "polyhft_errors_total");
+        assert_eq!(
+            CounterMetric::OrderbookUpdates.metric_name(),
+            "polyhft_orderbook_updates_total"
+        );
+        assert_eq!(CounterMetric::Orders.metric_name(), "polyhft_orders_total");
+        assert_eq!(CounterMetric::Fills.metric_name(), "polyhft_fills_total");
+        assert_eq!(
+            CounterMetric::WsReconnects.metric_name(),
+            "polyhft_ws_reconnects_total"
+        );
+    }
+
+    #[test]
+    fn test_latency_metric_clone() {
+        let metric = LatencyMetric::PriceFeed;
+        let cloned = metric;
+        assert_eq!(metric.metric_name(), cloned.metric_name());
+    }
+
+    #[test]
+    fn test_gauge_metric_clone() {
+        let metric = GaugeMetric::Equity;
+        let cloned = metric;
+        assert_eq!(metric.metric_name(), cloned.metric_name());
+    }
+
+    #[test]
+    fn test_counter_metric_clone() {
+        let metric = CounterMetric::PriceTicks;
+        let cloned = metric;
+        assert_eq!(metric.metric_name(), cloned.metric_name());
+    }
+
+    #[test]
+    fn test_latency_metric_debug() {
+        let metric = LatencyMetric::PriceFeed;
+        let debug_str = format!("{:?}", metric);
+        assert!(debug_str.contains("PriceFeed"));
+    }
+
+    #[test]
+    fn test_gauge_metric_debug() {
+        let metric = GaugeMetric::Equity;
+        let debug_str = format!("{:?}", metric);
+        assert!(debug_str.contains("Equity"));
+    }
+
+    #[test]
+    fn test_counter_metric_debug() {
+        let metric = CounterMetric::PriceTicks;
+        let debug_str = format!("{:?}", metric);
+        assert!(debug_str.contains("PriceTicks"));
+    }
+
+    // Note: The actual recording functions call the metrics crate which needs a recorder installed.
+    // Testing them would require setting up a mock recorder.
+    // However, we can test that the functions don't panic when called.
+
+    #[test]
+    fn test_record_latency_no_panic() {
+        // This should not panic even without a recorder
+        record_latency(LatencyMetric::PriceFeed, Duration::from_millis(50));
+    }
+
+    #[test]
+    fn test_set_gauge_no_panic() {
+        set_gauge(GaugeMetric::Equity, 1000.0);
+    }
+
+    #[test]
+    fn test_increment_counter_simple_no_panic() {
+        increment_counter_simple(CounterMetric::PriceTicks);
+    }
+
+    #[test]
+    fn test_increment_counter_with_labels_no_panic() {
+        increment_counter(CounterMetric::Errors, &[("component", "test".to_string())]);
+    }
+
+    #[test]
+    fn test_record_price_tick_no_panic() {
+        record_price_tick();
+    }
+
+    #[test]
+    fn test_record_orderbook_update_no_panic() {
+        record_orderbook_update();
+    }
+
+    #[test]
+    fn test_record_signal_no_panic() {
+        record_signal("yes", "spot_divergence", "trade");
+    }
+
+    #[test]
+    fn test_record_order_no_panic() {
+        record_order("yes", "submitted");
+    }
+
+    #[test]
+    fn test_record_fill_no_panic() {
+        record_fill("yes");
+    }
+
+    #[test]
+    fn test_record_ws_reconnect_no_panic() {
+        record_ws_reconnect("binance");
+    }
+
+    #[test]
+    fn test_record_error_no_panic() {
+        record_error("feed", "connection_failed");
     }
 }

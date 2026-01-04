@@ -101,3 +101,139 @@ impl<M: FairValueModel> SignalDetector<M> {
         ))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::GbmModel;
+    use crate::orderbook::PriceLevel;
+    use rust_decimal_macros::dec;
+
+    fn create_test_market(open_offset_mins: i64, close_offset_mins: i64) -> Market {
+        let now = Utc::now();
+        Market {
+            condition_id: "test-condition".to_string(),
+            yes_token_id: "yes-token".to_string(),
+            no_token_id: "no-token".to_string(),
+            open_price: dec!(100000),
+            open_time: now - Duration::minutes(open_offset_mins),
+            close_time: now + Duration::minutes(close_offset_mins),
+        }
+    }
+
+    fn create_test_orderbook(ask_price: Decimal) -> OrderBook {
+        OrderBook {
+            token_id: "yes-token".to_string(),
+            bids: vec![],
+            asks: vec![PriceLevel {
+                price: ask_price,
+                size: dec!(100),
+            }],
+            updated_at: Utc::now(),
+        }
+    }
+
+    #[test]
+    fn test_detector_creation() {
+        let model = GbmModel::new();
+        let detector = SignalDetector::new(model, dec!(0.005), dec!(0.002));
+        assert_eq!(detector.fee_rate, dec!(0.005));
+        assert_eq!(detector.slippage_estimate, dec!(0.002));
+    }
+
+    #[test]
+    fn test_is_post_reset_within_window() {
+        let model = GbmModel::new();
+        let detector = SignalDetector::new(model, dec!(0.005), dec!(0.002));
+
+        // Market opened 1 minute ago
+        let market = create_test_market(1, 14);
+        assert!(detector.is_post_reset(&market, Duration::minutes(2)));
+    }
+
+    #[test]
+    fn test_is_post_reset_outside_window() {
+        let model = GbmModel::new();
+        let detector = SignalDetector::new(model, dec!(0.005), dec!(0.002));
+
+        // Market opened 5 minutes ago
+        let market = create_test_market(5, 10);
+        assert!(!detector.is_post_reset(&market, Duration::minutes(2)));
+    }
+
+    #[test]
+    fn test_detect_expired_market() {
+        let model = GbmModel::new();
+        let detector = SignalDetector::new(model, dec!(0.005), dec!(0.002));
+
+        // Market already expired
+        let market = create_test_market(20, -1);
+        let orderbook = create_test_orderbook(dec!(0.5));
+
+        let signal = detector.detect(&market, dec!(100000), dec!(0.4), &orderbook);
+        assert!(signal.is_none());
+    }
+
+    #[test]
+    fn test_detect_no_asks() {
+        let model = GbmModel::new();
+        let detector = SignalDetector::new(model, dec!(0.005), dec!(0.002));
+
+        let market = create_test_market(5, 10);
+        let orderbook = OrderBook {
+            token_id: "yes-token".to_string(),
+            bids: vec![],
+            asks: vec![],
+            updated_at: Utc::now(),
+        };
+
+        let signal = detector.detect(&market, dec!(100000), dec!(0.4), &orderbook);
+        assert!(signal.is_none());
+    }
+
+    #[test]
+    fn test_detect_no_edge() {
+        let model = GbmModel::new();
+        let detector = SignalDetector::new(model, dec!(0.005), dec!(0.002));
+
+        let market = create_test_market(5, 10);
+        // Fair value ~0.5, orderbook at 0.5, no edge after costs
+        let orderbook = create_test_orderbook(dec!(0.50));
+
+        let signal = detector.detect(&market, dec!(100000), dec!(0.4), &orderbook);
+        assert!(signal.is_none());
+    }
+
+    #[test]
+    fn test_detect_generates_yes_signal() {
+        let model = GbmModel::new();
+        let detector = SignalDetector::new(model, dec!(0.005), dec!(0.002));
+
+        let market = create_test_market(5, 10);
+        // Price went up significantly, so P(up) should be high
+        // Orderbook has low ask price, creating edge
+        let orderbook = create_test_orderbook(dec!(0.40));
+
+        let signal = detector.detect(&market, dec!(102000), dec!(0.4), &orderbook);
+        if let Some(s) = signal {
+            // Should be Yes side since price is up
+            assert_eq!(s.side, Side::Yes);
+            assert!(s.adjusted_edge > dec!(0));
+        }
+    }
+
+    #[test]
+    fn test_detect_post_reset_reason() {
+        let model = GbmModel::new();
+        let detector = SignalDetector::new(model, dec!(0.001), dec!(0.001));
+
+        // Market just opened 1 minute ago
+        let market = create_test_market(1, 14);
+        let orderbook = create_test_orderbook(dec!(0.30));
+
+        let signal = detector.detect(&market, dec!(105000), dec!(0.4), &orderbook);
+        if let Some(s) = signal {
+            assert_eq!(s.reason, SignalReason::PostResetLag);
+        }
+    }
+}

@@ -91,3 +91,78 @@ Avg Edge:         {:.2}%
         )
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_backtest_summary_default() {
+        let summary = BacktestSummary::default();
+        assert_eq!(summary.total_pnl, dec!(0));
+        assert_eq!(summary.net_pnl, dec!(0));
+        assert_eq!(summary.total_trades, 0);
+    }
+
+    #[test]
+    fn test_backtest_summary_clone() {
+        let mut summary = BacktestSummary::default();
+        summary.total_pnl = dec!(100);
+        summary.net_pnl = dec!(95);
+        summary.sharpe_ratio = dec!(1.5);
+        summary.win_rate = dec!(0.65);
+        summary.total_trades = 50;
+
+        let cloned = summary.clone();
+        assert_eq!(cloned.total_pnl, dec!(100));
+        assert_eq!(cloned.net_pnl, dec!(95));
+        assert_eq!(cloned.sharpe_ratio, dec!(1.5));
+        assert_eq!(cloned.win_rate, dec!(0.65));
+        assert_eq!(cloned.total_trades, 50);
+    }
+
+    #[test]
+    fn test_backtest_summary_format_table() {
+        let summary = BacktestSummary {
+            total_pnl: dec!(100),
+            net_pnl: dec!(95),
+            sharpe_ratio: dec!(1.5),
+            sortino_ratio: dec!(2.0),
+            win_rate: dec!(0.65),
+            profit_factor: dec!(1.8),
+            max_drawdown: dec!(10),
+            max_drawdown_pct: dec!(0.05),
+            total_trades: 50,
+            avg_trade_duration_secs: 300,
+            avg_edge: dec!(0.02),
+        };
+
+        let table = summary.format_table();
+        assert!(table.contains("BACKTEST RESULTS"));
+        assert!(table.contains("Net P&L"));
+        assert!(table.contains("Sharpe Ratio"));
+        assert!(table.contains("Total Trades"));
+    }
+
+    #[test]
+    fn test_backtest_result_default() {
+        let result = BacktestResult::default();
+        assert_eq!(result.summary.total_pnl, dec!(0));
+        assert!(result
+            .trades_path
+            .to_string_lossy()
+            .contains("backtest_trades"));
+        assert!(result
+            .equity_path
+            .to_string_lossy()
+            .contains("equity_curve"));
+    }
+
+    #[test]
+    fn test_backtest_result_clone() {
+        let result = BacktestResult::default();
+        let cloned = result.clone();
+        assert_eq!(result.trades_path, cloned.trades_path);
+        assert_eq!(result.equity_path, cloned.equity_path);
+    }
+}

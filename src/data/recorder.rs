@@ -515,4 +515,169 @@ mod tests {
         let snapshot = stats.snapshot();
         assert_eq!(snapshot.price_ticks_received, 2000);
     }
+
+    #[tokio::test]
+    async fn test_with_output_dir() {
+        let temp_dir = TempDir::new().unwrap();
+        let recorder = DataRecorder::with_output_dir(temp_dir.path().to_path_buf());
+        assert_eq!(recorder.output_dir(), temp_dir.path());
+    }
+
+    #[test]
+    fn test_record_error_display() {
+        let full_error = RecordError::ChannelFull;
+        assert_eq!(format!("{}", full_error), "Channel full, data dropped");
+
+        let closed_error = RecordError::ChannelClosed;
+        assert_eq!(format!("{}", closed_error), "Channel closed");
+    }
+
+    #[test]
+    fn test_record_error_is_error() {
+        let error: Box<dyn std::error::Error> = Box::new(RecordError::ChannelFull);
+        assert!(error.to_string().contains("Channel full"));
+    }
+
+    #[test]
+    fn test_record_error_equality() {
+        assert_eq!(RecordError::ChannelFull, RecordError::ChannelFull);
+        assert_eq!(RecordError::ChannelClosed, RecordError::ChannelClosed);
+        assert_ne!(RecordError::ChannelFull, RecordError::ChannelClosed);
+    }
+
+    #[tokio::test]
+    async fn test_record_price_async() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = RecorderConfig {
+            output_dir: temp_dir.path().to_path_buf(),
+            rotation_interval_secs: 3600,
+            buffer_size: 1,
+            flush_interval_secs: 1,
+        };
+
+        let recorder = DataRecorder::new(config);
+
+        let tick = PriceTick {
+            symbol: "BTCUSDT".to_string(),
+            price: dec!(42500.00),
+            timestamp: Utc::now(),
+            exchange_ts: Utc::now(),
+        };
+
+        recorder.record_price_async(tick).await.unwrap();
+
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+        let stats = recorder.stats();
+        assert_eq!(stats.price_ticks_received, 1);
+    }
+
+    #[tokio::test]
+    async fn test_record_orderbook_async() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = RecorderConfig {
+            output_dir: temp_dir.path().to_path_buf(),
+            rotation_interval_secs: 3600,
+            buffer_size: 1,
+            flush_interval_secs: 1,
+        };
+
+        let recorder = DataRecorder::new(config);
+
+        let book = OrderBook {
+            token_id: "token123".to_string(),
+            bids: vec![PriceLevel {
+                price: dec!(0.55),
+                size: dec!(100),
+            }],
+            asks: vec![PriceLevel {
+                price: dec!(0.56),
+                size: dec!(100),
+            }],
+            updated_at: Utc::now(),
+        };
+
+        recorder.record_orderbook_async(book).await.unwrap();
+
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+        let stats = recorder.stats();
+        assert_eq!(stats.orderbook_updates_received, 1);
+    }
+
+    #[test]
+    fn test_recorder_config_clone() {
+        let config = RecorderConfig::default();
+        let cloned = config.clone();
+        assert_eq!(config.buffer_size, cloned.buffer_size);
+        assert_eq!(config.output_dir, cloned.output_dir);
+    }
+
+    #[test]
+    fn test_recorder_stats_clone() {
+        let stats = RecorderStats {
+            price_ticks_received: 100,
+            price_ticks_written: 90,
+            orderbook_updates_received: 50,
+            orderbook_updates_written: 45,
+            files_written: 5,
+            channel_drops: 2,
+        };
+        let cloned = stats.clone();
+        assert_eq!(stats.price_ticks_received, cloned.price_ticks_received);
+        assert_eq!(stats.channel_drops, cloned.channel_drops);
+    }
+
+    #[tokio::test]
+    async fn test_multiple_price_ticks() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = RecorderConfig {
+            output_dir: temp_dir.path().to_path_buf(),
+            rotation_interval_secs: 3600,
+            buffer_size: 10,
+            flush_interval_secs: 1,
+        };
+
+        let recorder = DataRecorder::new(config);
+
+        // Record multiple ticks
+        for i in 0..5 {
+            let tick = PriceTick {
+                symbol: "BTCUSDT".to_string(),
+                price: dec!(42500.00) + rust_decimal::Decimal::from(i),
+                timestamp: Utc::now(),
+                exchange_ts: Utc::now(),
+            };
+            recorder.record_price(tick).unwrap();
+        }
+
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+        let stats = recorder.stats();
+        assert_eq!(stats.price_ticks_received, 5);
+    }
+
+    #[tokio::test]
+    async fn test_atomic_recorder_stats_all_fields() {
+        let stats = AtomicRecorderStats::default();
+
+        stats.price_ticks_received.fetch_add(10, Ordering::Relaxed);
+        stats.price_ticks_written.fetch_add(8, Ordering::Relaxed);
+        stats
+            .orderbook_updates_received
+            .fetch_add(5, Ordering::Relaxed);
+        stats
+            .orderbook_updates_written
+            .fetch_add(4, Ordering::Relaxed);
+        stats.files_written.fetch_add(2, Ordering::Relaxed);
+        stats.channel_drops.fetch_add(1, Ordering::Relaxed);
+
+        let snapshot = stats.snapshot();
+        assert_eq!(snapshot.price_ticks_received, 10);
+        assert_eq!(snapshot.price_ticks_written, 8);
+        assert_eq!(snapshot.orderbook_updates_received, 5);
+        assert_eq!(snapshot.orderbook_updates_written, 4);
+        assert_eq!(snapshot.files_written, 2);
+        assert_eq!(snapshot.channel_drops, 1);
+    }
 }

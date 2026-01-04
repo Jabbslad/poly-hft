@@ -24,3 +24,4 @@ pub mod orderbook;
 pub mod risk;
 pub mod signal;
 pub mod telemetry;
+pub mod ws;

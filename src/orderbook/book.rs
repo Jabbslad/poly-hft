@@ -76,4 +76,91 @@ mod tests {
         assert_eq!(book.mid_price(), Some(dec!(0.51)));
         assert_eq!(book.spread(), Some(dec!(0.02)));
     }
+
+    #[test]
+    fn test_order_book_new() {
+        let book = OrderBook::new("test-token");
+        assert_eq!(book.token_id, "test-token");
+        assert!(book.bids.is_empty());
+        assert!(book.asks.is_empty());
+    }
+
+    #[test]
+    fn test_order_book_best_bid() {
+        let mut book = OrderBook::new("test");
+        assert!(book.best_bid().is_none());
+
+        book.bids = vec![
+            PriceLevel {
+                price: dec!(0.55),
+                size: dec!(100),
+            },
+            PriceLevel {
+                price: dec!(0.54),
+                size: dec!(100),
+            },
+        ];
+        assert_eq!(book.best_bid(), Some(dec!(0.55)));
+    }
+
+    #[test]
+    fn test_order_book_best_ask() {
+        let mut book = OrderBook::new("test");
+        assert!(book.best_ask().is_none());
+
+        book.asks = vec![
+            PriceLevel {
+                price: dec!(0.56),
+                size: dec!(100),
+            },
+            PriceLevel {
+                price: dec!(0.57),
+                size: dec!(100),
+            },
+        ];
+        assert_eq!(book.best_ask(), Some(dec!(0.56)));
+    }
+
+    #[test]
+    fn test_order_book_mid_price_no_bids() {
+        let mut book = OrderBook::new("test");
+        book.asks = vec![PriceLevel {
+            price: dec!(0.56),
+            size: dec!(100),
+        }];
+        assert!(book.mid_price().is_none());
+    }
+
+    #[test]
+    fn test_order_book_mid_price_no_asks() {
+        let mut book = OrderBook::new("test");
+        book.bids = vec![PriceLevel {
+            price: dec!(0.54),
+            size: dec!(100),
+        }];
+        assert!(book.mid_price().is_none());
+    }
+
+    #[test]
+    fn test_order_book_spread_no_bids() {
+        let mut book = OrderBook::new("test");
+        book.asks = vec![PriceLevel {
+            price: dec!(0.56),
+            size: dec!(100),
+        }];
+        assert!(book.spread().is_none());
+    }
+
+    #[test]
+    fn test_order_book_clone() {
+        let mut book = OrderBook::new("test");
+        book.bids = vec![PriceLevel {
+            price: dec!(0.50),
+            size: dec!(100),
+        }];
+
+        let cloned = book.clone();
+        assert_eq!(book.token_id, cloned.token_id);
+        assert_eq!(book.bids.len(), cloned.bids.len());
+    }
 }
