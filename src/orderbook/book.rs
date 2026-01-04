@@ -54,6 +54,16 @@ impl OrderBook {
             _ => None,
         }
     }
+
+    /// Get best bid size
+    pub fn best_bid_size(&self) -> Option<Decimal> {
+        self.bids.first().map(|l| l.size)
+    }
+
+    /// Get best ask size
+    pub fn best_ask_size(&self) -> Option<Decimal> {
+        self.asks.first().map(|l| l.size)
+    }
 }
 
 #[cfg(test)]

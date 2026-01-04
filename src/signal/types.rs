@@ -25,6 +25,8 @@ pub enum SignalReason {
     SpotDivergence,
     /// Volatility increased, fair value shifted
     VolatilitySpike,
+    /// Spread capture - buying both sides for guaranteed profit
+    SpreadCapture,
 }
 
 /// A trading signal
