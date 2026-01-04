@@ -84,4 +84,61 @@ mod tests {
         assert_eq!(fills[0].order_id, order_id);
         assert_eq!(fills[0].fees, dec!(0.05)); // 100 * 0.50 * 0.001
     }
+
+    #[tokio::test]
+    async fn test_paper_engine_cancel() {
+        let engine = PaperEngine::new(dec!(0.001));
+        let order_id = OrderId::new_v4();
+
+        // Cancel should succeed (no-op in paper trading)
+        let result = engine.cancel_order(order_id).await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_paper_engine_multiple_orders() {
+        let engine = PaperEngine::new(dec!(0.002));
+
+        let order1 = Order {
+            token_id: "yes-token".to_string(),
+            side: Side::Yes,
+            price: dec!(0.55),
+            size: dec!(50),
+            order_type: OrderType::Market,
+        };
+
+        let order2 = Order {
+            token_id: "no-token".to_string(),
+            side: Side::No,
+            price: dec!(0.45),
+            size: dec!(75),
+            order_type: OrderType::Limit,
+        };
+
+        engine.submit_order(order1).await.unwrap();
+        engine.submit_order(order2).await.unwrap();
+
+        let fills = engine.get_fills().await.unwrap();
+        assert_eq!(fills.len(), 2);
+        assert_eq!(fills[0].side, Side::Yes);
+        assert_eq!(fills[1].side, Side::No);
+    }
+
+    #[tokio::test]
+    async fn test_paper_engine_zero_fee() {
+        let engine = PaperEngine::new(dec!(0));
+
+        let order = Order {
+            token_id: "test".to_string(),
+            side: Side::Yes,
+            price: dec!(0.50),
+            size: dec!(100),
+            order_type: OrderType::Limit,
+        };
+
+        engine.submit_order(order).await.unwrap();
+        let fills = engine.get_fills().await.unwrap();
+
+        assert_eq!(fills[0].fees, dec!(0));
+    }
 }

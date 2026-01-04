@@ -1,28 +1,17 @@
 //! Binance WebSocket price feed implementation
 
 use super::{PriceFeed, PriceTick};
+use crate::ws::{WsClient, WsConfig, WsMessage};
 use async_trait::async_trait;
 use chrono::{TimeZone, Utc};
-use futures_util::{SinkExt, StreamExt};
 use rust_decimal::Decimal;
 use serde::Deserialize;
 use std::str::FromStr;
 use std::time::Duration;
 use tokio::sync::mpsc;
-use tokio::time::sleep;
-use tokio_tungstenite::{connect_async, tungstenite::Message};
 
 /// Binance WebSocket base URL
 const BINANCE_WS_URL: &str = "wss://stream.binance.com:9443/ws";
-
-/// Maximum reconnection attempts before giving up
-const MAX_RECONNECT_ATTEMPTS: u32 = 10;
-
-/// Initial reconnection delay
-const INITIAL_RECONNECT_DELAY: Duration = Duration::from_secs(1);
-
-/// Maximum reconnection delay
-const MAX_RECONNECT_DELAY: Duration = Duration::from_secs(60);
 
 /// Binance trade message structure
 #[derive(Debug, Deserialize)]
@@ -91,95 +80,33 @@ impl BinanceFeed {
         })
     }
 
-    /// Run the WebSocket connection loop with automatic reconnection
-    async fn run_connection_loop(url: String, tx: mpsc::Sender<PriceTick>) -> anyhow::Result<()> {
-        let mut reconnect_attempts = 0;
-        let mut reconnect_delay = INITIAL_RECONNECT_DELAY;
-
-        loop {
-            match Self::connect_and_stream(&url, &tx).await {
-                Ok(()) => {
-                    // Clean disconnect, exit
-                    tracing::info!("WebSocket connection closed cleanly");
+    /// Run the message processing loop
+    async fn run_message_loop(
+        mut ws_rx: mpsc::Receiver<WsMessage>,
+        tick_tx: mpsc::Sender<PriceTick>,
+    ) {
+        while let Some(msg) = ws_rx.recv().await {
+            match msg {
+                WsMessage::Text(text) => {
+                    if let Some(tick) = Self::parse_message(&text) {
+                        if tick_tx.send(tick).await.is_err() {
+                            tracing::debug!("Tick receiver dropped, stopping feed");
+                            break;
+                        }
+                    }
+                }
+                WsMessage::Connected => {
+                    tracing::info!("Binance feed connected");
+                }
+                WsMessage::Disconnected => {
+                    tracing::warn!("Binance feed disconnected");
                     break;
                 }
-                Err(e) => {
-                    reconnect_attempts += 1;
-                    tracing::warn!(
-                        error = %e,
-                        attempt = reconnect_attempts,
-                        "WebSocket connection error, reconnecting..."
-                    );
-
-                    if reconnect_attempts >= MAX_RECONNECT_ATTEMPTS {
-                        tracing::error!("Max reconnection attempts reached, giving up");
-                        return Err(anyhow::anyhow!(
-                            "Max reconnection attempts ({}) reached",
-                            MAX_RECONNECT_ATTEMPTS
-                        ));
-                    }
-
-                    // Check if receiver is still alive
-                    if tx.is_closed() {
-                        tracing::info!("Receiver dropped, stopping reconnection");
-                        break;
-                    }
-
-                    sleep(reconnect_delay).await;
-                    reconnect_delay = (reconnect_delay * 2).min(MAX_RECONNECT_DELAY);
+                WsMessage::Reconnecting { attempt } => {
+                    tracing::warn!(attempt, "Binance feed reconnecting...");
                 }
-            }
-        }
-
-        Ok(())
-    }
-
-    /// Connect to WebSocket and stream messages
-    async fn connect_and_stream(url: &str, tx: &mpsc::Sender<PriceTick>) -> anyhow::Result<()> {
-        tracing::info!(url = url, "Connecting to Binance WebSocket");
-
-        let (ws_stream, _response) = connect_async(url).await?;
-        let (mut write, mut read) = ws_stream.split();
-
-        tracing::info!("Connected to Binance WebSocket");
-
-        // Ping interval for keepalive
-        let mut ping_interval = tokio::time::interval(Duration::from_secs(30));
-        ping_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-
-        loop {
-            tokio::select! {
-                // Handle incoming messages
-                msg = read.next() => {
-                    match msg {
-                        Some(Ok(Message::Text(text))) => {
-                            if let Some(tick) = Self::parse_message(&text) {
-                                if tx.send(tick).await.is_err() {
-                                    tracing::debug!("Receiver dropped, closing connection");
-                                    return Ok(());
-                                }
-                            }
-                        }
-                        Some(Ok(Message::Ping(data))) => {
-                            write.send(Message::Pong(data)).await?;
-                        }
-                        Some(Ok(Message::Close(_))) => {
-                            tracing::info!("Received close frame");
-                            return Ok(());
-                        }
-                        Some(Err(e)) => {
-                            return Err(anyhow::anyhow!("WebSocket error: {}", e));
-                        }
-                        None => {
-                            return Err(anyhow::anyhow!("WebSocket stream ended unexpectedly"));
-                        }
-                        _ => {}
-                    }
-                }
-
-                // Send periodic pings
-                _ = ping_interval.tick() => {
-                    write.send(Message::Ping(vec![])).await?;
+                WsMessage::Binary(_) => {
+                    // Binance doesn't send binary messages for trade streams
                 }
             }
         }
@@ -189,19 +116,27 @@ impl BinanceFeed {
 #[async_trait]
 impl PriceFeed for BinanceFeed {
     async fn subscribe(&self) -> anyhow::Result<mpsc::Receiver<PriceTick>> {
-        let (tx, rx) = mpsc::channel(1024);
+        let (tick_tx, tick_rx) = mpsc::channel(1024);
         let url = self.build_ws_url();
 
         tracing::info!(symbol = %self.symbol, "Subscribing to Binance feed");
 
-        // Spawn connection task
+        // Create WebSocket client with config
+        let config = WsConfig::new(url)
+            .max_reconnects(10)
+            .initial_delay(Duration::from_secs(1))
+            .max_delay(Duration::from_secs(60))
+            .ping_interval(Duration::from_secs(30));
+
+        let client = WsClient::new(config);
+        let ws_rx = client.connect();
+
+        // Spawn message processing task
         tokio::spawn(async move {
-            if let Err(e) = Self::run_connection_loop(url, tx).await {
-                tracing::error!(error = %e, "Binance feed connection loop failed");
-            }
+            Self::run_message_loop(ws_rx, tick_tx).await;
         });
 
-        Ok(rx)
+        Ok(tick_rx)
     }
 }
 
@@ -279,5 +214,56 @@ mod tests {
         }"#;
 
         assert!(BinanceFeed::parse_message(msg).is_none());
+    }
+
+    #[tokio::test]
+    async fn test_message_loop_handles_text() {
+        let (ws_tx, ws_rx) = mpsc::channel(10);
+        let (tick_tx, mut tick_rx) = mpsc::channel(10);
+
+        // Spawn the message loop
+        let handle = tokio::spawn(async move {
+            BinanceFeed::run_message_loop(ws_rx, tick_tx).await;
+        });
+
+        // Send a valid trade message
+        let msg = r#"{"e":"trade","E":1704067200000,"s":"BTCUSDT","t":123456789,"p":"42500.50","q":"0.001","T":1704067200123}"#;
+        ws_tx.send(WsMessage::Text(msg.to_string())).await.unwrap();
+
+        // Receive the tick
+        let tick = tick_rx.recv().await.unwrap();
+        assert_eq!(tick.symbol, "BTCUSDT");
+        assert_eq!(tick.price, Decimal::from_str("42500.50").unwrap());
+
+        // Send disconnect to close the loop
+        ws_tx.send(WsMessage::Disconnected).await.unwrap();
+        handle.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_message_loop_ignores_invalid() {
+        let (ws_tx, ws_rx) = mpsc::channel(10);
+        let (tick_tx, mut tick_rx) = mpsc::channel(10);
+
+        let handle = tokio::spawn(async move {
+            BinanceFeed::run_message_loop(ws_rx, tick_tx).await;
+        });
+
+        // Send invalid message
+        ws_tx
+            .send(WsMessage::Text("invalid json".to_string()))
+            .await
+            .unwrap();
+
+        // Send valid message
+        let msg = r#"{"e":"trade","E":1704067200000,"s":"BTCUSDT","t":123456789,"p":"100.00","q":"0.001","T":1704067200123}"#;
+        ws_tx.send(WsMessage::Text(msg.to_string())).await.unwrap();
+
+        // Should only receive the valid tick
+        let tick = tick_rx.recv().await.unwrap();
+        assert_eq!(tick.price, Decimal::from_str("100.00").unwrap());
+
+        ws_tx.send(WsMessage::Disconnected).await.unwrap();
+        handle.await.unwrap();
     }
 }
