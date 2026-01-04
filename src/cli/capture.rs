@@ -82,9 +82,9 @@ impl CaptureArgs {
                             // Record to metrics
                             record_price_tick();
 
-                            // Record to Parquet
-                            if let Err(e) = recorder.record_price(tick.clone()).await {
-                                tracing::error!(error = %e, "Failed to record price tick");
+                            // Record to Parquet - non-blocking!
+                            if let Err(e) = recorder.record_price(tick.clone()) {
+                                tracing::warn!(error = %e, "Failed to record price tick");
                             }
 
                             tick_count += 1;
@@ -117,7 +117,7 @@ impl CaptureArgs {
         }
 
         // Print final stats
-        let stats = recorder.stats().await;
+        let stats = recorder.stats();
         let elapsed = (Utc::now() - start_time).num_seconds();
 
         println!("\nCapture Summary:");
@@ -125,6 +125,7 @@ impl CaptureArgs {
         println!("  Price ticks received: {}", stats.price_ticks_received);
         println!("  Price ticks written: {}", stats.price_ticks_written);
         println!("  Files written: {}", stats.files_written);
+        println!("  Channel drops: {}", stats.channel_drops);
         println!("  Output directory: {:?}", self.output);
 
         Ok(())
