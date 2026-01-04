@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-poly-hft is a high-frequency trading bot for Polymarket's 15-minute BTC up/down binary markets. It exploits pricing lags between real-time Binance spot prices and Polymarket odds.
+poly-hft is a high-frequency trading bot for Polymarket's 1-hour BTC up/down binary markets. It exploits pricing lags between real-time Binance spot prices and Polymarket odds.
 
 **IMPORTANT**: All implementation work MUST adhere to the PRD at `docs/PRD.md`. This document defines the architecture, module interfaces, quality standards, and implementation phases. Do not deviate from the PRD without explicit user approval.
 

@@ -2,12 +2,12 @@
 
 ## Overview
 
-A high-frequency trading bot that exploits pricing lags in Polymarket's 15-minute BTC up/down binary markets. When spot prices move, there's a brief window where Polymarket odds remain stale. The bot calculates fair value from real-time Binance prices and trades the discrepancy.
+A high-frequency trading bot that exploits pricing lags in Polymarket's 1-hour BTC up/down binary markets. When spot prices move, there's a brief window where Polymarket odds remain stale. The bot calculates fair value from real-time Binance prices and trades the discrepancy.
 
 ## Strategy Summary
 
 1. Monitor real-time BTC spot price via Binance WebSocket
-2. Track active 15-minute up/down markets on Polymarket
+2. Track active 1-hour up/down markets on Polymarket
 3. Calculate fair probability using Black-Scholes-style model (GBM)
 4. Compare fair value to current market prices
 5. When edge exceeds threshold (accounting for fees/slippage), execute trade
@@ -18,7 +18,7 @@ A high-frequency trading bot that exploits pricing lags in Polymarket's 15-minut
 **Paper Trading Mode**: Full logic with simulated execution against live data.
 
 ### In Scope
-- BTC 15-minute up/down markets only
+- BTC 1-hour up/down markets only
 - Binance WebSocket price feed
 - Paper trading execution (no real orders)
 - Tick data capture to Parquet
@@ -70,7 +70,7 @@ A high-frequency trading bot that exploits pricing lags in Polymarket's 15-minut
                                                   +------------------+
 +------------------+                                       |
 |  Gamma API       |---->  Market Discovery                v
-|  (15-min markets)|                              +------------------+
+|  (1-hour markets)|                              +------------------+
 +------------------+                              |  Execution       |
                                                   |  Engine (Paper)  |
 +------------------+                              +------------------+
@@ -118,21 +118,26 @@ pub struct PriceTick {
 ```
 
 ### 2. Market Discovery (`src/market/`)
-**Purpose**: Find and track active 15-minute BTC up/down markets
+**Purpose**: Find and track active 1-hour BTC up/down markets
 
 **Components**:
-- `gamma.rs` - Gamma API client for market discovery
+- `gamma.rs` - Gamma API client for market discovery via `/series` endpoint
 - `tracker.rs` - Tracks active markets, handles rollovers
+
+**Market Structure** (from Polymarket):
+- **Series slug**: `btc-up-or-down-hourly`
+- **Outcomes**: "Up" / "Down"
+- **Resolution**: Binance BTC/USDT 1-hour candle (close >= open = Up)
+- **Discovery**: `GET https://gamma-api.polymarket.com/series` filtered by slug
 
 **Interface**:
 ```rust
 pub struct Market {
     pub condition_id: String,
-    pub yes_token_id: String,
-    pub no_token_id: String,
-    pub open_price: Decimal,       // BTC price at market open
-    pub open_time: DateTime<Utc>,
-    pub close_time: DateTime<Utc>,
+    pub up_token_id: String,       // "Up" outcome token
+    pub down_token_id: String,     // "Down" outcome token
+    pub event_start_time: DateTime<Utc>,  // When the 1-hour candle starts
+    pub close_time: DateTime<Utc>,        // When market closes for trading
 }
 
 pub trait MarketTracker: Send + Sync {
@@ -229,7 +234,7 @@ pub struct FairValue {
    ```rust
    pub fn calculate_confidence(params: &SignalParams) -> Decimal {
        let vol_confidence = 1.0 - (vol_std_error / vol_estimate).min(1.0);
-       let time_confidence = (time_to_expiry / 15_minutes).min(1.0);
+       let time_confidence = (time_to_expiry / 60_minutes).min(1.0);
        let liquidity_confidence = (available_liquidity / target_size).min(1.0);
 
        (vol_confidence * 0.4 + time_confidence * 0.3 + liquidity_confidence * 0.3)
@@ -241,7 +246,7 @@ pub struct FairValue {
    - Respect `max_concurrent_positions` limit
 
 **Post-Reset Detection**:
-The strategy specifically targets the first 1-2 minutes after a new 15-min market opens, when:
+The strategy specifically targets the first 5-10 minutes after a new 1-hour market opens, when:
 - Liquidity providers are slower to update quotes
 - Order book may be thin/stale
 - Spot price has already moved from the settlement price
