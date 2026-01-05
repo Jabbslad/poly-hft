@@ -1,33 +1,80 @@
-# poly-hft Trading Flow
+# poly-hft Trading Flow: Lag Edges Strategy
 
 ## Overview
 
-This document describes the complete trading flow for poly-hft, a high-frequency trading bot that exploits pricing lags between real-time Binance BTC prices and Polymarket's 15-minute up/down binary markets.
+This document describes the complete trading flow for poly-hft, a trading bot that exploits pricing lags between real-time Binance BTC prices and Polymarket's 15-minute up/down binary markets using the **momentum-first lag detection** approach.
 
 ---
 
-## The Core Insight
+## The Core Insight: Momentum First, Then Check Odds
 
 ```
 Polymarket 15-minute BTC markets work like this:
 
   Market opens at 12:00:00
-  Open price (strike) = $95,000
+  Strike price = $95,000 (BTC price at market open)
   Question: "Will BTC be above $95,000 at 12:15:00?"
 
   YES token pays $1.00 if BTC > $95,000 at expiry
   NO token pays $1.00 if BTC ≤ $95,000 at expiry
 
-The EDGE we exploit:
+The LAG EDGE we exploit:
 
-  When BTC moves on Binance, Polymarket odds take time to update.
+  1. DETECT MOMENTUM FIRST: Watch Binance for significant moves from strike
+  2. CHECK IF ODDS LAG: Are Polymarket odds still in the "neutral zone"?
+  3. SIGNAL WHEN BOTH: Momentum confirmed AND odds haven't caught up
 
-  12:00:00 - Market opens, BTC = $95,000, YES = $0.50 (fair)
-  12:01:23 - BTC spikes to $95,800 on Binance
-  12:01:24 - Fair value of YES is now ~$0.72 (calculated via GBM model)
-  12:01:24 - Polymarket YES still showing $0.52 (stale!)
+  Timeline Example:
+  12:00:00 - Market opens, BTC = $95,000 (strike), YES = $0.50 (fair)
+             → No edge yet (BTC at strike, odds are correct)
 
-  Edge = $0.72 - $0.52 = $0.20 (20 cents per share!)
+  12:02:30 - BTC at $95,750 (+0.79% momentum detected!)
+             → Polymarket YES still at $0.52 (LAGGING!)
+             → SIGNAL: Buy YES (momentum UP, odds still neutral)
+
+  12:03:00 - Polymarket catches up, YES now $0.68
+             → Edge gone (too late)
+
+KEY INSIGHT: Edge only exists DURING the market window, not at open.
+```
+
+## Critical Timing Window
+
+```
+┌────────────────────────────────────────────────────────────────────────┐
+│                     15-MINUTE MARKET LIFECYCLE                          │
+├────────────────────────────────────────────────────────────────────────┤
+│                                                                         │
+│  00:00 ─────── 01:00 ─────── 05:00 ─────── 12:00 ─────── 13:00 ── 15:00│
+│    │             │             │             │             │        │  │
+│    │   NO EDGE   │  EDGE       │   PRIME     │  EDGE       │  NO    │  │
+│    │   (at open) │  WINDOW     │   WINDOW    │  SHRINKS    │  EDGE  │  │
+│    │             │             │             │             │        │  │
+│    ▼             ▼             ▼             ▼             ▼        ▼  │
+│  Strike=BTC   Momentum      Larger moves   Odds catch    Too late     │
+│  Odds=50/50   can form      more likely    up gradually  to trade     │
+│                                                                         │
+└────────────────────────────────────────────────────────────────────────┘
+
+At Market Open (00:00):
+  - Strike = current BTC price
+  - YES = 50¢, NO = 50¢ (fair odds)
+  - NO EDGE (nothing to exploit)
+
+1-5 Minutes After Open:
+  - BTC may have moved from strike
+  - Polymarket odds may still be ~50¢
+  - EDGE WINDOW (lag exists if momentum + neutral odds)
+
+5-12 Minutes After Open:
+  - PRIME WINDOW for larger moves
+  - Still enough time for position to pay off
+  - Best risk/reward
+
+12-15 Minutes (Near Close):
+  - Odds have had time to adjust
+  - Less opportunity for lag
+  - EDGE SHRINKS
 ```
 
 ---
@@ -65,56 +112,59 @@ The EDGE we exploit:
                                      │
                                      ▼
 
-     PHASE 2: FAIR VALUE CALCULATION (<10ms)
-     ═══════════════════════════════════════
+     PHASE 2: MOMENTUM DETECTION (<10ms)
+     ════════════════════════════════════
 
                         ┌─────────────────────────┐
-                        │    FAIR VALUE MODEL     │
-                        │    (GBM / Black-Scholes)│
+                        │   MOMENTUM DETECTOR     │
+                        │   (Rolling 2-min window)│
                         └─────────────────────────┘
                                      │
               ┌──────────────────────┼──────────────────────┐
               │                      │                      │
               ▼                      ▼                      ▼
      ┌─────────────────┐   ┌─────────────────┐   ┌─────────────────┐
-     │ INPUTS          │   │ FORMULA         │   │ OUTPUT          │
+     │ INPUTS          │   │ CALCULATION     │   │ OUTPUT          │
      │                 │   │                 │   │                 │
-     │ S = $95,800     │   │ d2 = ln(S/K) -  │   │ P(up) = 0.72    │
-     │ (current spot)  │   │      0.5σ²T     │   │ P(down) = 0.28  │
-     │                 │   │      ───────    │   │                 │
-     │ K = $95,000     │   │       σ√T       │   │ Confidence: 0.85│
-     │ (open/strike)   │   │                 │   │                 │
-     │                 │   │ P(up) = N(d2)   │   │                 │
-     │ T = 13.6 min    │   │                 │   │                 │
-     │ (time to expiry)│   │ N() = normal CDF│   │                 │
+     │ Current price:  │   │ momentum =      │   │ Direction: UP   │
+     │   $95,750       │   │ (current-strike)│   │ Move: +0.79%    │
+     │                 │   │ ─────────────── │   │ Confirmed: YES  │
+     │ Strike price:   │   │     strike      │   │                 │
+     │   $95,000       │   │                 │   │                 │
+     │                 │   │ = ($95,750 -    │   │                 │
+     │ Time since open:│   │    $95,000)     │   │                 │
+     │   2 min 30 sec  │   │   / $95,000     │   │                 │
      │                 │   │                 │   │                 │
-     │ σ = 45% annual  │   │                 │   │                 │
-     │ (volatility)    │   │                 │   │                 │
+     │ Min threshold:  │   │ = +0.79%        │   │                 │
+     │   0.7%          │   │   > 0.7% ✓      │   │                 │
      └─────────────────┘   └─────────────────┘   └─────────────────┘
                                      │
                                      ▼
 
-     PHASE 3: SIGNAL DETECTION (<10ms)
-     ══════════════════════════════════
+     PHASE 3: LAG DETECTION (<10ms)
+     ═══════════════════════════════
 
                         ┌─────────────────────────┐
-                        │    SIGNAL GENERATOR     │
+                        │     LAG DETECTOR        │
+                        │ (Momentum vs Odds Check)│
                         └─────────────────────────┘
                                      │
                                      ▼
      ┌───────────────────────────────────────────────────────────────┐
-     │                      EDGE CALCULATION                         │
+     │                      LAG DETECTION LOGIC                      │
      │                                                               │
-     │   Fair Value (YES):     $0.72                                 │
-     │   Market Price (YES):   $0.52  (best ask on Polymarket)       │
+     │   Momentum Direction:   UP (+0.79%)                           │
+     │   Polymarket YES Price: $0.52  (from order book)              │
      │   ─────────────────────────────                               │
-     │   Raw Edge:             $0.20  (20%)                          │
      │                                                               │
-     │   Estimated Fees:       $0.005 (0.5% taker fee)               │
-     │   Estimated Slippage:   $0.005 (0.5% for our size)            │
-     │   Delay Decay Buffer:   $0.015 (1.5% for 500ms taker delay)   │
+     │   CHECK: Is momentum UP but YES still in neutral zone?        │
+     │                                                               │
+     │   YES price $0.52 < $0.60 (max_yes_for_up threshold)          │
+     │   → ODDS ARE LAGGING! ✓                                       │
+     │                                                               │
+     │   Lag magnitude: ~18 cents (should be ~$0.70, is $0.52)       │
      │   ─────────────────────────────                               │
-     │   Adjusted Edge:        $0.175 (17.5%)                        │
+     │   SIGNAL: BUY YES (momentum confirmed, odds lagging)          │
      │                                                               │
      └───────────────────────────────────────────────────────────────┘
                                      │
@@ -124,26 +174,27 @@ The EDGE we exploit:
      │                    (ALL must pass)                            │
      │                                                               │
      │   ┌─────────────────────────────────────────────────────┐    │
-     │   │ ✓ Edge ≥ 0.5%        Adjusted edge 17.5% ≥ 0.5%     │    │
+     │   │ ✓ Time since open    2m 30s > 60s minimum           │    │
+     │   │   ≥ 60 seconds       (avoid trading at market open)  │    │
      │   └─────────────────────────────────────────────────────┘    │
      │   ┌─────────────────────────────────────────────────────┐    │
-     │   │ ✓ Edge ≤ 10%         17.5% > 10%? NO → SUSPICIOUS   │    │
-     │   │                      (But raw 20% ok, decay-adjusted)│    │
+     │   │ ✓ Time to close      12m 30s > 2 min minimum        │    │
+     │   │   ≥ 120 seconds      (avoid trading near close)      │    │
      │   └─────────────────────────────────────────────────────┘    │
      │   ┌─────────────────────────────────────────────────────┐    │
-     │   │ ✓ Time to expiry     13.6 min > 1 min minimum       │    │
-     │   │   ≥ 60 seconds       13.6 min < 14 min maximum      │    │
+     │   │ ✓ Momentum size      0.79% ≥ 0.7% threshold         │    │
+     │   │   ≥ 0.7%             (significant move detected)     │    │
+     │   └─────────────────────────────────────────────────────┘    │
+     │   ┌─────────────────────────────────────────────────────┐    │
+     │   │ ✓ Odds in neutral    YES = $0.52 < $0.60 threshold  │    │
+     │   │   zone               (odds haven't caught up yet)    │    │
      │   └─────────────────────────────────────────────────────┘    │
      │   ┌─────────────────────────────────────────────────────┐    │
      │   │ ✓ Liquidity          $500 available at $0.52        │    │
-     │   │   ≥ order size       Our order: $50 ✓               │    │
-     │   └─────────────────────────────────────────────────────┘    │
-     │   ┌─────────────────────────────────────────────────────┐    │
-     │   │ ✓ Volatility         45% annual is reasonable       │    │
-     │   │   10% < σ < 200%     (not broken data)              │    │
+     │   │   ≥ order size       Our order: $10 ✓                │    │
      │   └─────────────────────────────────────────────────────┘    │
      │                                                               │
-     │   RESULT: ✅ SIGNAL GENERATED                                 │
+     │   RESULT: ✅ LAG SIGNAL GENERATED                             │
      │                                                               │
      └───────────────────────────────────────────────────────────────┘
                                      │
@@ -184,31 +235,34 @@ The EDGE we exploit:
                                      │
                                      ▼
 
-     PHASE 5: POSITION SIZING (Kelly Criterion)
-     ══════════════════════════════════════════
+     PHASE 5: POSITION SIZING (Fixed Size)
+     ═══════════════════════════════════════
 
      ┌───────────────────────────────────────────────────────────────┐
-     │                      KELLY SIZING                             │
+     │                      FIXED SIZING                             │
      │                                                               │
-     │   Bankroll:           $500                                    │
-     │   Fair value (p):     0.72                                    │
-     │   Market price:       0.52                                    │
-     │   Payout if win:      $1.00                                   │
+     │   The lag edges strategy uses FIXED sizing for simplicity:    │
+     │   - Same amount every trade (mechanical execution)            │
+     │   - No edge-based adjustments                                 │
+     │   - Scales with bankroll as % of capital                      │
      │                                                               │
-     │   Odds (b) = (1 - market_price) / market_price                │
-     │           = (1 - 0.52) / 0.52 = 0.923                         │
+     │   Bankroll:           $100                                    │
+     │   Fixed percentage:   10%                                     │
+     │   Max percentage:     20% (safety cap)                        │
      │                                                               │
-     │   Full Kelly: f* = (p × b - q) / b                            │
-     │                  = (0.72 × 0.923 - 0.28) / 0.923              │
-     │                  = 0.416 (41.6% of bankroll!)                 │
+     │   Base size: $100 × 10% = $10                                 │
      │                                                               │
-     │   Quarter Kelly: f = 0.416 × 0.25 = 0.104 (10.4%)             │
+     │   Safety check: $10 < $100 × 20% = $20 ✓                      │
      │                                                               │
-     │   Uncapped size: $500 × 10.4% = $52                           │
+     │   FINAL SIZE: $10.00                                          │
      │                                                               │
-     │   Hard cap (1% max): $500 × 1% = $5                           │
+     │   ─────────────────────────────────────────────────────       │
      │                                                               │
-     │   FINAL SIZE: min($52, $5) = $5.00                            │
+     │   As bankroll grows:                                          │
+     │     $100  → $10 per trade                                     │
+     │     $500  → $50 per trade                                     │
+     │     $1000 → $100 per trade                                    │
+     │     $10K  → $1000 per trade                                   │
      │                                                               │
      └───────────────────────────────────────────────────────────────┘
                                      │
@@ -527,13 +581,21 @@ When edge is smaller (1-3%), we use maker orders to avoid the delay:
 | Phase | Action | Time Budget |
 |-------|--------|-------------|
 | 1 | Data ingestion (continuous) | < 50ms latency |
-| 2 | Fair value calculation | < 10ms |
-| 3 | Signal detection + filtering | < 10ms |
+| 2 | Momentum detection | < 10ms |
+| 3 | Lag detection + filtering | < 10ms |
 | 4 | Order type decision | < 1ms |
-| 5 | Kelly position sizing | < 1ms |
+| 5 | Fixed position sizing | < 1ms |
 | 6 | Risk limit checks | < 5ms |
 | 7 | Order execution | < 20ms + 500ms delay |
 | 8 | Position tracking | < 1ms |
-| 9 | Settlement | Automatic at expiry |
+| 9 | Settlement | Automatic at 15-min expiry |
 
-**Key insight**: Our speed (100ms) matters for getting into the queue early. The 500ms taker delay is unavoidable, so we compensate by requiring larger edges when taking.
+**Key Insights**:
+
+1. **Edge exists DURING the window, not at open**: At market open, odds are fair (50/50). The edge appears 1-12 minutes into the window when BTC has moved but odds haven't caught up.
+
+2. **Momentum first, then check odds**: Detect spot movement from strike first, then verify Polymarket odds are still in the neutral zone (40-60 cents).
+
+3. **Timing matters**: Avoid the first minute (no momentum yet) and last 2 minutes (odds already adjusted). Prime window is 2-10 minutes after open.
+
+4. **Mechanical execution**: Fixed sizing, same trade every time. No complex edge calculations - just momentum + lagging odds = trade.

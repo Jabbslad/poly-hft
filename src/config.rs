@@ -15,6 +15,12 @@ pub struct Config {
     pub execution: ExecutionConfig,
     pub data: DataConfig,
     pub telemetry: TelemetryConfig,
+    #[serde(default)]
+    pub momentum: MomentumConfig,
+    #[serde(default)]
+    pub lag: LagConfig,
+    #[serde(default)]
+    pub sizing: SizingConfig,
 }
 
 /// Price feed configuration
@@ -84,6 +90,155 @@ pub struct TelemetryConfig {
     pub metrics_port: u16,
     pub log_level: String,
     pub otlp_endpoint: Option<String>,
+}
+
+/// Momentum detection configuration
+#[derive(Debug, Clone, Deserialize)]
+pub struct MomentumConfig {
+    /// Enable momentum detection
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+
+    /// Window duration for momentum calculation (seconds)
+    #[serde(default = "default_momentum_window")]
+    pub window_seconds: u64,
+
+    /// Minimum move percentage to trigger momentum signal
+    #[serde(default = "default_min_move_pct")]
+    pub min_move_pct: Decimal,
+
+    /// Maximum move percentage (reject extreme moves as data errors)
+    #[serde(default = "default_max_move_pct")]
+    pub max_move_pct: Decimal,
+
+    /// Confirmation period: move must persist for this duration (seconds)
+    #[serde(default = "default_confirmation_seconds")]
+    pub confirmation_seconds: u64,
+}
+
+fn default_true() -> bool {
+    true
+}
+fn default_momentum_window() -> u64 {
+    120
+}
+fn default_min_move_pct() -> Decimal {
+    Decimal::new(7, 3) // 0.007 = 0.7%
+}
+fn default_max_move_pct() -> Decimal {
+    Decimal::new(5, 2) // 0.05 = 5%
+}
+fn default_confirmation_seconds() -> u64 {
+    30
+}
+
+impl Default for MomentumConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            window_seconds: 120,
+            min_move_pct: Decimal::new(7, 3), // 0.7%
+            max_move_pct: Decimal::new(5, 2), // 5%
+            confirmation_seconds: 30,
+        }
+    }
+}
+
+/// Lag detection configuration
+#[derive(Debug, Clone, Deserialize)]
+pub struct LagConfig {
+    /// Minimum lag in cents to generate signal
+    #[serde(default = "default_min_lag_cents")]
+    pub min_lag_cents: Decimal,
+
+    /// Don't buy YES if price already above this (momentum already priced in)
+    #[serde(default = "default_max_yes_for_up")]
+    pub max_yes_for_up: Decimal,
+
+    /// Don't buy NO if YES price already below this (momentum already priced in)
+    #[serde(default = "default_min_yes_for_down")]
+    pub min_yes_for_down: Decimal,
+
+    /// Minimum seconds after market open to trade
+    #[serde(default = "default_min_seconds_after_open")]
+    pub min_seconds_after_open: u64,
+
+    /// Maximum seconds before market close to trade
+    #[serde(default = "default_max_seconds_before_close")]
+    pub max_seconds_before_close: u64,
+}
+
+fn default_min_lag_cents() -> Decimal {
+    Decimal::new(10, 2) // 0.10
+}
+fn default_max_yes_for_up() -> Decimal {
+    Decimal::new(60, 2) // 0.60
+}
+fn default_min_yes_for_down() -> Decimal {
+    Decimal::new(40, 2) // 0.40
+}
+fn default_min_seconds_after_open() -> u64 {
+    60 // 1 minute after open
+}
+fn default_max_seconds_before_close() -> u64 {
+    120 // 2 minutes before close
+}
+
+impl Default for LagConfig {
+    fn default() -> Self {
+        Self {
+            min_lag_cents: Decimal::new(10, 2),
+            max_yes_for_up: Decimal::new(60, 2),
+            min_yes_for_down: Decimal::new(40, 2),
+            min_seconds_after_open: 60,
+            max_seconds_before_close: 120,
+        }
+    }
+}
+
+/// Position sizing configuration
+#[derive(Debug, Clone, Deserialize)]
+pub struct SizingConfig {
+    /// Sizing mode: "fixed" or "kelly"
+    #[serde(default = "default_sizing_mode")]
+    pub mode: SizingMode,
+
+    /// Fixed percentage of capital per trade (for fixed mode)
+    #[serde(default = "default_fixed_pct")]
+    pub fixed_pct: Decimal,
+
+    /// Maximum percentage of capital per trade
+    #[serde(default = "default_max_pct")]
+    pub max_pct: Decimal,
+}
+
+/// Sizing mode for position sizing
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum SizingMode {
+    #[default]
+    Fixed,
+    Kelly,
+}
+
+fn default_sizing_mode() -> SizingMode {
+    SizingMode::Fixed
+}
+fn default_fixed_pct() -> Decimal {
+    Decimal::new(10, 2) // 0.10 = 10%
+}
+fn default_max_pct() -> Decimal {
+    Decimal::new(20, 2) // 0.20 = 20%
+}
+
+impl Default for SizingConfig {
+    fn default() -> Self {
+        Self {
+            mode: SizingMode::Fixed,
+            fixed_pct: Decimal::new(10, 2),
+            max_pct: Decimal::new(20, 2),
+        }
+    }
 }
 
 impl Config {

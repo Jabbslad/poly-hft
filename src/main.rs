@@ -20,7 +20,7 @@ async fn main() -> anyhow::Result<()> {
     match cli.command {
         Commands::Run(args) => {
             tracing::info!("Starting paper trading mode");
-            args.execute().await?;
+            args.execute(&config).await?;
         }
         Commands::Capture(args) => {
             tracing::info!("Starting data capture mode");

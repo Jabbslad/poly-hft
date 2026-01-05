@@ -6,7 +6,7 @@ mod book;
 mod client;
 
 pub use book::OrderBook;
-pub use client::PolymarketClient;
+pub use client::{OrderBookManager, PolymarketClient, PolymarketConfig, POLYMARKET_WS_URL};
 
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};

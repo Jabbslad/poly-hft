@@ -27,8 +27,8 @@ impl Default for RecorderConfig {
         Self {
             output_dir: PathBuf::from("./data"),
             rotation_interval_secs: 3600, // 1 hour
-            buffer_size: 1000,
-            flush_interval_secs: 60,
+            buffer_size: 100,        // Flush every 100 records
+            flush_interval_secs: 10,  // Or every 10 seconds
         }
     }
 }
@@ -488,8 +488,8 @@ mod tests {
     fn test_default_config() {
         let config = RecorderConfig::default();
         assert_eq!(config.rotation_interval_secs, 3600);
-        assert_eq!(config.buffer_size, 1000);
-        assert_eq!(config.flush_interval_secs, 60);
+        assert_eq!(config.buffer_size, 100);
+        assert_eq!(config.flush_interval_secs, 10);
     }
 
     #[tokio::test]

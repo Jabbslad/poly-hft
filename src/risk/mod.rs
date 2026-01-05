@@ -5,11 +5,13 @@
 mod kelly;
 mod limits;
 mod position;
+mod sizing;
 mod types;
 
 pub use kelly::KellyCalculator;
 pub use limits::{DrawdownMonitor, HaltReason, PositionLimits};
 pub use position::{ClosedPosition, Position, PositionTracker};
+pub use sizing::{create_sizer, FixedSizer, KellySizer, PositionSizer};
 pub use types::RiskError;
 
 use crate::execution::Order;

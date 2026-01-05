@@ -2,23 +2,36 @@
 
 ## Overview
 
-A high-frequency trading bot that exploits pricing lags in Polymarket's 1-hour BTC up/down binary markets. When spot prices move, there's a brief window where Polymarket odds remain stale. The bot calculates fair value from real-time Binance prices and trades the discrepancy.
+A high-frequency trading bot that exploits pricing lags in Polymarket's 15-minute BTC up/down binary markets. When BTC spot prices move significantly from the market's strike price, Polymarket odds take 30-90 seconds to adjust. The bot detects confirmed spot momentum FIRST, then enters positions while odds are still lagging.
 
-## Strategy Summary
+## Strategy Summary: Lag Edges
 
 1. Monitor real-time BTC spot price via Binance WebSocket
-2. Track active 1-hour up/down markets on Polymarket
-3. Calculate fair probability using Black-Scholes-style model (GBM)
-4. Compare fair value to current market prices
-5. When edge exceeds threshold (accounting for fees/slippage), execute trade
-6. Close positions as market converges or at settlement
+2. Track active 15-minute up/down markets on Polymarket
+3. **Detect spot momentum**: BTC moves >0.7% from strike price within 2 minutes
+4. **Check for lag**: Polymarket odds still in "neutral zone" (YES 40-60 cents) despite confirmed momentum
+5. When lag detected (momentum confirmed but odds stale), execute trade
+6. Hold position until market settlement (15-minute resolution)
+
+### Key Insight: Timing Window
+
+The edge only exists DURING the market window, not at market open:
+
+```
+Market Open (00:00):     No edge - odds are fair at 50/50, BTC = strike price
+1-5 min after open:      EDGE WINDOW - BTC has time to move, odds may lag
+5-12 min after open:     PRIME WINDOW - larger moves, odds still catching up
+12-15 min (near close):  Edge shrinks - odds have had time to adjust
+```
+
+**Signal Logic**: Momentum detected + Odds still neutral = Lag edge exists
 
 ## MVP Scope (Phase 1)
 
 **Paper Trading Mode**: Full logic with simulated execution against live data.
 
 ### In Scope
-- BTC 1-hour up/down markets only
+- BTC 15-minute up/down markets only
 - Binance WebSocket price feed
 - Paper trading execution (no real orders)
 - Tick data capture to Parquet
@@ -118,17 +131,18 @@ pub struct PriceTick {
 ```
 
 ### 2. Market Discovery (`src/market/`)
-**Purpose**: Find and track active 1-hour BTC up/down markets
+**Purpose**: Find and track active 15-minute BTC up/down markets
 
 **Components**:
-- `gamma.rs` - Gamma API client for market discovery via `/series` endpoint
+- `gamma.rs` - Gamma API client for market discovery via `/events` endpoint
 - `tracker.rs` - Tracks active markets, handles rollovers
 
 **Market Structure** (from Polymarket):
-- **Series slug**: `btc-up-or-down-hourly`
+- **Series slug**: `btc-up-or-down-15min` or similar
 - **Outcomes**: "Up" / "Down"
-- **Resolution**: Binance BTC/USDT 1-hour candle (close >= open = Up)
-- **Discovery**: `GET https://gamma-api.polymarket.com/series` filtered by slug
+- **Resolution**: Will BTC be above strike price at 15-minute mark?
+- **Strike price**: BTC spot price at market open (from Chainlink oracle)
+- **Discovery**: `GET https://gamma-api.polymarket.com/events` filtered by slug
 
 **Interface**:
 ```rust
@@ -207,59 +221,63 @@ pub struct FairValue {
 ```
 
 ### 5. Signal Generator (`src/signal/`)
-**Purpose**: Detect tradeable pricing discrepancies
+**Purpose**: Detect lag edges where spot momentum has occurred but Polymarket odds haven't caught up
 
 **Components**:
-- `detector.rs` - Compares fair value to market prices
-- `filter.rs` - Applies edge thresholds and filters
+- `detector.rs` - Momentum-first lag detection
+- `filter.rs` - Time window and odds zone filters
 - `types.rs` - Signal types and enums
 
-**Signal Detection Logic**:
+**Momentum-First Signal Detection**:
 
-1. **Edge Calculation**:
+The lag edges strategy inverts traditional fair-value detection. Instead of calculating theoretical fair value and comparing to market price, we:
+
+1. **Detect Momentum First**:
    ```
-   raw_edge = fair_value - market_price
-   adjusted_edge = raw_edge - estimated_fees - slippage_estimate
-   ```
+   momentum = (current_price - strike_price) / strike_price
 
-2. **Signal Filters** (all must pass):
-   - `min_edge_threshold`: Reject if adjusted_edge < 0.5% (configurable)
-   - `max_edge_threshold`: Reject if adjusted_edge > 10% (likely stale/bad data)
-   - `min_time_to_expiry`: Reject if < 60s to settlement (vol spikes, uncertain fills)
-   - `max_time_to_expiry`: Reject if > 14m from open (edge typically appears post-reset)
-   - `min_liquidity`: Reject if order book depth < min_order_size at target price
-   - `volatility_sanity`: Reject if estimated vol < 10% or > 200% annualized
-
-3. **Confidence Scoring**:
-   ```rust
-   pub fn calculate_confidence(params: &SignalParams) -> Decimal {
-       let vol_confidence = 1.0 - (vol_std_error / vol_estimate).min(1.0);
-       let time_confidence = (time_to_expiry / 60_minutes).min(1.0);
-       let liquidity_confidence = (available_liquidity / target_size).min(1.0);
-
-       (vol_confidence * 0.4 + time_confidence * 0.3 + liquidity_confidence * 0.3)
-   }
+   IF momentum > +0.7%: direction = UP
+   IF momentum < -0.7%: direction = DOWN
    ```
 
-4. **Signal Priority** (when multiple signals exist):
-   - Sort by `adjusted_edge * confidence` descending
-   - Respect `max_concurrent_positions` limit
+2. **Check if Odds Are Lagging**:
+   ```
+   IF direction == UP AND yes_price < 0.60:
+       lag_detected = true  // Odds still neutral despite UP momentum
 
-**Post-Reset Detection**:
-The strategy specifically targets the first 5-10 minutes after a new 1-hour market opens, when:
-- Liquidity providers are slower to update quotes
-- Order book may be thin/stale
-- Spot price has already moved from the settlement price
+   IF direction == DOWN AND yes_price > 0.40:
+       lag_detected = true  // Odds still neutral despite DOWN momentum
+   ```
 
-```rust
-pub struct ResetDetector {
-    pub last_market_close: HashMap<String, DateTime<Utc>>,
-}
+3. **Time Window Filters** (critical for lag edges):
+   - `min_seconds_after_open`: Reject if < 60s after market open (no momentum yet)
+   - `max_seconds_before_close`: Reject if < 120s before close (odds already adjusted)
+   - `optimal_window`: 2-10 minutes after open (prime exploitation window)
 
-impl ResetDetector {
-    // Returns true if market opened within `window` duration
-    pub fn is_post_reset(&self, market: &Market, window: Duration) -> bool;
-}
+4. **Signal Filters** (all must pass):
+   - `momentum_threshold`: Reject if momentum < 0.7% (not enough move)
+   - `momentum_ceiling`: Reject if momentum > 5% (extreme move, data issue)
+   - `odds_neutral_zone`: Reject if odds already reflect momentum (no lag)
+   - `min_liquidity`: Reject if order book depth < min_order_size
+   - `time_window`: Reject if outside 1-13 minute window
+
+**Why Timing Matters**:
+
+```
+At Market Open (00:00):
+- Strike = current BTC price
+- Fair odds: YES = 50¢, NO = 50¢
+- NO EDGE EXISTS (nothing to exploit)
+
+1-5 Minutes After Open:
+- BTC may have moved from strike
+- Odds may still be near 50¢
+- EDGE WINDOW (lag exists)
+
+12-15 Minutes (Near Close):
+- Odds have had time to adjust
+- Arbitrage opportunity closes
+- EDGE SHRINKS
 ```
 
 **Interface**:
@@ -268,21 +286,26 @@ impl ResetDetector {
 pub struct Signal {
     pub id: Uuid,
     pub market: Market,
-    pub side: Side,           // Buy Yes or Buy No
-    pub fair_value: Decimal,
-    pub market_price: Decimal,
-    pub raw_edge: Decimal,
-    pub adjusted_edge: Decimal,  // After fees/slippage
-    pub confidence: Decimal,
-    pub reason: SignalReason,
+    pub side: Side,               // YES or NO
+    pub momentum: MomentumSignal, // The detected spot momentum
+    pub lag_magnitude: Decimal,   // How much odds are lagging (cents)
+    pub current_odds: Decimal,    // YES price at signal time
     pub timestamp: DateTime<Utc>,
+    pub reason: SignalReason,
+}
+
+#[derive(Debug, Clone)]
+pub struct MomentumSignal {
+    pub direction: MomentumDirection,  // Up or Down
+    pub move_pct: Decimal,             // e.g., 0.008 = 0.8%
+    pub strike_price: Decimal,
+    pub current_price: Decimal,
+    pub detected_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone)]
 pub enum SignalReason {
-    PostResetLag,        // Market just opened, prices lagging
-    SpotDivergence,      // Spot moved significantly, odds stale
-    VolatilitySpike,     // Vol increased, fair value shifted
+    MomentumLag,  // Momentum detected, odds lagging
 }
 
 #[derive(Debug, Clone)]
@@ -293,11 +316,13 @@ pub enum FilterResult {
 
 #[derive(Debug, Clone)]
 pub enum RejectReason {
-    EdgeTooSmall(Decimal),
-    EdgeTooLarge(Decimal),
+    MomentumTooSmall(Decimal),
+    MomentumTooLarge(Decimal),
+    OddsAlreadyMoved,           // Odds reflect momentum, no lag
+    LagTooSmall(Decimal),
     InsufficientLiquidity(Decimal),
-    TooCloseToExpiry(Duration),
-    VolatilityOutOfRange(Decimal),
+    TooSoonAfterOpen(i64),      // < 60s after market open
+    TooCloseToExpiry(i64),      // < 120s before close
     MaxPositionsReached,
 }
 ```
@@ -829,23 +854,35 @@ asset = "BTC"
 interval = "15m"
 refresh_interval_secs = 30
 
-[model]
-volatility_window_minutes = 30
-min_time_to_expiry_secs = 60  # Don't trade last minute
+[momentum]
+enabled = true
+window_seconds = 120          # 2 minute window for momentum detection
+min_move_pct = 0.007          # 0.7% minimum move to trigger
+confirmation_seconds = 30     # Move must persist for 30s
 
-[signal]
-min_edge_threshold = 0.005    # 0.5%
-max_edge_threshold = 0.10     # 10% (likely stale data)
+[lag]
+min_lag_cents = 0.10          # 10 cent minimum lag to signal
+max_yes_for_up = 0.60         # Don't buy YES if already > 60%
+min_yes_for_down = 0.40       # Don't buy NO if YES already < 40%
+min_seconds_after_open = 60   # Don't trade in first minute
+max_seconds_before_close = 120 # Don't trade in last 2 minutes
+
+[sizing]
+mode = "fixed"                # "fixed" or "kelly"
+fixed_pct = 0.10              # 10% of capital per trade (fixed mode)
+max_pct = 0.20                # Never exceed 20%
+kelly_fraction = 0.25         # Quarter Kelly (kelly mode)
 
 [risk]
-kelly_fraction = 0.25
-max_position_pct = 0.01       # 1% of bankroll
+max_position_pct = 0.20       # 20% of bankroll max per position
 max_concurrent_positions = 3
-initial_bankroll = 500.0
+initial_bankroll = 100.0
+max_daily_loss_pct = 0.10     # Stop if down 10% today
+max_drawdown_pct = 0.20       # Stop if down 20% from peak
 
 [execution]
 mode = "paper"                # paper | live
-slippage_estimate = 0.001     # 0.1%
+slippage_estimate = 0.005     # 0.5%
 
 [data]
 capture_enabled = true

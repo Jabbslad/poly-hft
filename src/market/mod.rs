@@ -5,7 +5,7 @@
 mod gamma;
 mod tracker;
 
-pub use gamma::GammaClient;
+pub use gamma::{GammaClient, GammaConfig, GAMMA_API_URL};
 pub use tracker::MarketTrackerImpl;
 
 use async_trait::async_trait;
